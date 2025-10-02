@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Virtual envs
+.venv/
+env/
+venv/
+
+# Jupyter notebooks
+.ipynb_checkpoints
+
+# Data
+data/
+*.csv
+*.edf
+*.fif
+
+# Logs & artifacts
+logs/
+mlruns/
+wandb/
+
+# Config
+*.hydra/
+
+# OS
+.DS_Store
+Thumbs.db
