@@ -1,32 +1,32 @@
-# Python
+# Python bytecode
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.so
 
-# Virtual envs
+# Virtual environments
 .venv/
 env/
 venv/
 
-# Jupyter notebooks
-.ipynb_checkpoints
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
 
 # Data
-data/
-*.csv
-*.edf
-*.fif
+data/**/*.csv
+data/**/*.edf
+data/**/*.fif
+
 
 # Logs & artifacts
 logs/
 mlruns/
 wandb/
 
-# Config
+# Configs
 *.hydra/
 
-# OS
+# OS-generated files
 .DS_Store
 Thumbs.db
