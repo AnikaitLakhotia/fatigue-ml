@@ -17,7 +17,7 @@ venv/
 data/**/*.csv
 data/**/*.edf
 data/**/*.fif
-
+data/**/*.parquet
 
 # Logs & artifacts
 logs/
