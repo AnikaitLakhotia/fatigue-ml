@@ -3,20 +3,18 @@ repos:
     rev: 24.3.0
     hooks:
       - id: black
-        language_version: python3
-
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
+        language_version: python3.11
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.0
     hooks:
       - id: isort
-
-  - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.3.0
+        name: isort
+  - repo: https://github.com/charliermarsh/ruff
+    rev: 0.3.0
     hooks:
       - id: ruff
-
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.9.0
+    rev: v1.9
     hooks:
       - id: mypy
-        additional_dependencies: [numpy, pandas, torch]
+        args: ["--ignore-missing-imports"]

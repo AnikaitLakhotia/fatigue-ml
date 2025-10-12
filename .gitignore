@@ -1,32 +1,35 @@
-# Python bytecode
+# Byte-compiled / caches
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.so
 
-# Virtual environments
+# Virtual envs
 .venv/
-env/
 venv/
+env/
 
-# Jupyter notebook checkpoints
-.ipynb_checkpoints/
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
 
-# Data
-data/**/*.csv
-data/**/*.edf
-data/**/*.fif
-data/**/*.parquet
+# Jupyter
+.ipynb_checkpoints
 
-# Logs & artifacts
+# Data and artifacts (do NOT commit raw/derived data)
+data/
+*.csv
+*.fif
+*.parquet
+*.h5
+*.npz
+
+# Logs & experiment artifacts
 logs/
 mlruns/
 wandb/
+artifacts/
 
-# Configs
-*.hydra/
-
-# OS-generated files
+# OS (mac)
 .DS_Store
-Thumbs.db

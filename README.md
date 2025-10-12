@@ -17,14 +17,15 @@ This repository contains a machine learning pipeline for detecting **fatigue**. 
 ## Repository layout
 ```
 fatigue-ml/
-├── data/                      # Local only: raw, interim, features, models (gitignored)
-│   ├── raw/                   # Put combined_dataset.csv here (local only)
-│   ├── interim/               # Preprocessed per-session .fif (auto-generated)
-│   ├── features/              # Extracted features (.parquet/.csv)
-│   └── models/                # Trained model checkpoints
+├── data/
+│   ├── raw/         # Raw data (local only; never commit)
+│   ├── interim/     # Preprocessed per-session files (local only)
+│   ├── features/    # Extracted feature matrices (local only)
+│   ├── models/      # Trained models / checkpoints (local only)
+│   └── results/     # Visualizations & reports (local only)
 ├── src/
-│   └── eeg/                   # Core package (data, features, models, scripts, utils)
-├── tests/                     # Unit & integration tests (pytest)
+│   └── eeg/         # Core source: data, scripts, utils, models
+├── tests/           # Unit & integration tests
 ├── .pre-commit-config.yaml    # Pre-commit hooks (black, isort, ruff, mypy)
 ├── .gitignore                 # Ensures data/ and artifacts aren't committed
 ├── poetry.lock                # Locked dependency versions (commit this)
