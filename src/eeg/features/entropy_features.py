@@ -1,22 +1,18 @@
-"""Entropy and complexity features.
-
-Contains:
-  - spectral_entropy: normalized Shannon entropy from PSD
-  - sample_entropy: simple SampEn implementation (for short windows)
-"""
+"""Entropy and complexity features."""
 
 from __future__ import annotations
 import numpy as np
 
 
 def spectral_entropy(psd: np.ndarray) -> np.ndarray:
-    """Compute normalized spectral entropy per channel.
+    """
+    Compute normalized spectral entropy per channel.
 
     Args:
-        psd: array (n_channels, n_freqs)
+        psd: (n_channels, n_freqs)
 
     Returns:
-        normalized entropy in [0, 1] per channel
+        1D array (n_channels,) with normalized entropy in [0,1].
     """
     p = psd / (psd.sum(axis=1, keepdims=True) + 1e-12)
     ent = -np.nansum(p * np.log2(p + 1e-12), axis=1)
@@ -25,18 +21,16 @@ def spectral_entropy(psd: np.ndarray) -> np.ndarray:
 
 
 def sample_entropy(x: np.ndarray, m: int = 2, r: float = 0.2) -> float:
-    """Compute a basic sample entropy for a univariate time series.
-
-    Note: This implementation favors clarity over extreme performance and is
-    appropriate for short windows (typical epoch lengths).
+    """
+    A simple Sample Entropy (SampEn) implementation for short windows.
 
     Args:
         x: 1D signal
         m: embedding dimension
-        r: tolerance as fraction of std (0.2 typical)
+        r: tolerance fraction of sd
 
     Returns:
-        scalar SampEn estimate
+        SampEn scalar
     """
     x = np.asarray(x, dtype=float)
     n = len(x)

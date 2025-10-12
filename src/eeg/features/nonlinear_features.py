@@ -1,14 +1,21 @@
-"""Nonlinear complexity estimators (Permutation entropy, Higuchi FD).
-
-Small, tested, and readable implementations suitable for epoch-level features.
-"""
+"""Nonlinear complexity estimators (permutation entropy and Higuchi fractal dimension)."""
 
 from __future__ import annotations
 import numpy as np
 
 
 def permutation_entropy(x: np.ndarray, m: int = 3, delay: int = 1) -> float:
-    """Compute Bandt-Pompe permutation entropy for time series x."""
+    """
+    Compute permutation entropy (Bandt-Pompe).
+
+    Args:
+        x: 1D signal
+        m: embedding dimension
+        delay: time delay
+
+    Returns:
+        Permutation entropy scalar
+    """
     n = len(x)
     if n < m * delay:
         return 0.0
@@ -23,13 +30,22 @@ def permutation_entropy(x: np.ndarray, m: int = 3, delay: int = 1) -> float:
 
 
 def higuchi_fd(x: np.ndarray, k_max: int = 10) -> float:
-    """Estimate Higuchi fractal dimension (simple and robust)."""
+    """
+    Higuchi fractal dimension estimator.
+
+    Args:
+        x: 1D signal
+        k_max: maximum k parameter
+
+    Returns:
+        Higuchi FD scalar
+    """
     n = len(x)
     if n < 10:
         return 0.0
     x = np.asarray(x, dtype=float)
     L = []
-    for k in range(1, min(k_max, n//2) + 1):
+    for k in range(1, min(k_max, n // 2) + 1):
         Lk = []
         for m in range(k):
             idxs = np.arange(m, n, k)
