@@ -38,12 +38,20 @@ def apply_bandpass(
     Returns:
         The modified Raw object.
     """
-    logger.info("Applying bandpass %.2f–%.2f Hz", float(l_freq) if l_freq else 0.0, float(h_freq) if h_freq else 0.0)
-    raw.filter(l_freq=l_freq, h_freq=h_freq, picks=picks, fir_design=fir_design, verbose=False)
+    logger.info(
+        "Applying bandpass %.2f–%.2f Hz",
+        float(l_freq) if l_freq else 0.0,
+        float(h_freq) if h_freq else 0.0,
+    )
+    raw.filter(
+        l_freq=l_freq, h_freq=h_freq, picks=picks, fir_design=fir_design, verbose=False
+    )
     return raw
 
 
-def apply_notch(raw: mne.io.BaseRaw, freqs: Iterable[float], picks: Optional[Iterable[str]] = None) -> mne.io.BaseRaw:
+def apply_notch(
+    raw: mne.io.BaseRaw, freqs: Iterable[float], picks: Optional[Iterable[str]] = None
+) -> mne.io.BaseRaw:
     """
     Apply notch filters in-place at the provided frequencies.
 
@@ -61,7 +69,9 @@ def apply_notch(raw: mne.io.BaseRaw, freqs: Iterable[float], picks: Optional[Ite
     return raw
 
 
-def set_reference(raw: mne.io.BaseRaw, reference: Optional[str] = "average") -> mne.io.BaseRaw:
+def set_reference(
+    raw: mne.io.BaseRaw, reference: Optional[str] = "average"
+) -> mne.io.BaseRaw:
     """
     Set EEG reference for the Raw object.
 

@@ -23,7 +23,9 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def split_combined_csv_by_session(csv_path: str | Path, out_dir: Optional[str | Path] = None) -> List[Path]:
+def split_combined_csv_by_session(
+    csv_path: str | Path, out_dir: Optional[str | Path] = None
+) -> List[Path]:
     """
     Split a combined CSV into per-session CSV files grouped by 'session_id'.
 
@@ -90,7 +92,9 @@ def load_csv_as_raw(session_csv: Path, sfreq: float = 256.0) -> mne.io.Raw:
     return raw
 
 
-def process_single_session(session_csv: Path, out_fif: Path, sfreq: float = 256.0) -> None:
+def process_single_session(
+    session_csv: Path, out_fif: Path, sfreq: float = 256.0
+) -> None:
     """
     Full processing for a single session CSV: load, filter, re-reference, ICA, and save to FIF.
 
@@ -116,7 +120,9 @@ def process_single_session(session_csv: Path, out_fif: Path, sfreq: float = 256.
     logger.info("Saved preprocessed FIF: %s", out_fif)
 
 
-def run_preprocess_stage(input_csv: str | Path, out_dir: str | Path, sfreq: float = 256.0) -> None:
+def run_preprocess_stage(
+    input_csv: str | Path, out_dir: str | Path, sfreq: float = 256.0
+) -> None:
     """
     Orchestrate preprocessing for combined CSV: split, process, save .fif files.
 

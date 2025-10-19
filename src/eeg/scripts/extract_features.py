@@ -23,6 +23,7 @@ import mne
 
 from src.eeg.utils.logger import get_logger
 from src.eeg.preprocessing.epoching import make_epochs
+
 # import the feature extraction functions from the features module
 from src.eeg.features.extract_features import extract_all_features
 from src.eeg.features.sidecars import save_epoch_spectrograms, save_sliding_connectivity
@@ -38,7 +39,9 @@ DEFAULT_BANDS = [
 ]
 
 
-def _detect_flat_or_bad_channels(raw: mne.io.BaseRaw, std_thresh: float = 1e-12) -> List[str]:
+def _detect_flat_or_bad_channels(
+    raw: mne.io.BaseRaw, std_thresh: float = 1e-12
+) -> List[str]:
     try:
         data = raw.get_data(picks="eeg")
     except Exception:
@@ -128,7 +131,9 @@ def process_single_fif(
     df["channel_names"] = repr(raw.info.get("ch_names", []))
     total_cols = [c for c in df.columns if c.startswith("total_")]
     if total_cols:
-        df["num_channels_with_zero_total"] = df[total_cols].apply(lambda r: int((r == 0).sum()), axis=1)
+        df["num_channels_with_zero_total"] = df[total_cols].apply(
+            lambda r: int((r == 0).sum()), axis=1
+        )
         df["has_any_zero_total"] = df["num_channels_with_zero_total"] > 0
     else:
         df["num_channels_with_zero_total"] = 0
@@ -156,7 +161,11 @@ def process_single_fif(
     if save_spectrograms or save_connectivity:
         sidecar_dir = out_dir / f"{raw_path.stem}_sidecars"
         sidecar_dir.mkdir(parents=True, exist_ok=True)
-        bands = [rng for _, rng in DEFAULT_BANDS] if connectivity_bands is None else connectivity_bands
+        bands = (
+            [rng for _, rng in DEFAULT_BANDS]
+            if connectivity_bands is None
+            else connectivity_bands
+        )
         connectivity_win = connectivity_win or window
         connectivity_step = connectivity_step or (window * (1 - overlap))
 
@@ -165,12 +174,21 @@ def process_single_fif(
             prefix = sidecar_dir / f"epoch_{i:04d}"
             if save_spectrograms:
                 try:
-                    save_epoch_spectrograms(epoch, sfreq, str(prefix) + "_spectrogram.npz")
+                    save_epoch_spectrograms(
+                        epoch, sfreq, str(prefix) + "_spectrogram.npz"
+                    )
                 except Exception:
                     logger.exception("Failed spectrogram for epoch %d", i)
             if save_connectivity:
                 try:
-                    save_sliding_connectivity(epoch, sfreq, str(prefix) + "_connectivity.npz", win_sec=connectivity_win, step_sec=connectivity_step, bands=bands)
+                    save_sliding_connectivity(
+                        epoch,
+                        sfreq,
+                        str(prefix) + "_connectivity.npz",
+                        win_sec=connectivity_win,
+                        step_sec=connectivity_step,
+                        bands=bands,
+                    )
                 except Exception:
                     logger.exception("Failed connectivity for epoch %d", i)
 

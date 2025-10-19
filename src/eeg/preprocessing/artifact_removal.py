@@ -50,7 +50,9 @@ def run_ica_and_remove(
     """
     n_components = min(n_components, len(raw.ch_names))
     logger.info("Running ICA with n_components=%d", n_components)
-    ica = mne.preprocessing.ICA(n_components=n_components, random_state=random_state, max_iter="auto")
+    ica = mne.preprocessing.ICA(
+        n_components=n_components, random_state=random_state, max_iter="auto"
+    )
     ica.fit(raw)
     if reject_eyeblinks:
         try:

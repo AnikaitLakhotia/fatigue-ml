@@ -8,6 +8,8 @@ __pycache__/
 .venv/
 venv/
 env/
+.env
+.envrc
 
 # Distribution / packaging
 dist/
@@ -30,6 +32,29 @@ logs/
 mlruns/
 wandb/
 artifacts/
+*.log
 
-# OS (mac)
+# Model / training artifacts
+*.pt
+*.ckpt
+*.joblib
+*.pkl
+
+# IDEs and OS
+.vscode/
+.idea/
+*.sublime-workspace
 .DS_Store
+Thumbs.db
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Notebook checkpoints
+.ipynb_checkpoints
+
+# Misc
+*.sqlite3
+*.db

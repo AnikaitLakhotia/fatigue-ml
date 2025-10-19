@@ -9,7 +9,10 @@ from __future__ import annotations
 from typing import Any
 import numpy as np
 
-def compute_minimum_norm_source_time_courses(raw, inv, start=0, stop=None, return_stc=False):
+
+def compute_minimum_norm_source_time_courses(
+    raw, inv, start=0, stop=None, return_stc=False
+):
     """
     Compute source time courses from a preloaded MNE Raw using an inverse operator.
 
@@ -35,7 +38,9 @@ def compute_minimum_norm_source_time_courses(raw, inv, start=0, stop=None, retur
     # compute evoked-like object if needed (mne expects evoked or epochs for apply_inverse)
     # Convert to 2D (n_channels, n_samples)
     method = "dSPM"
-    stc = mne.minimum_norm.apply_inverse_raw(raw, inv, lambda2=1.0 / 9.0, method=method, verbose=False)
+    stc = mne.minimum_norm.apply_inverse_raw(
+        raw, inv, lambda2=1.0 / 9.0, method=method, verbose=False
+    )
     if return_stc:
         return stc
     return stc.data  # (n_sources, n_times)

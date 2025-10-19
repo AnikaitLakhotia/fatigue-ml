@@ -30,7 +30,9 @@ BANDS = {
 EPS = 1e-12
 
 
-def compute_psd_welch(data: np.ndarray, sfreq: float, n_per_seg: int | None = None) -> Tuple[np.ndarray, np.ndarray]:
+def compute_psd_welch(
+    data: np.ndarray, sfreq: float, n_per_seg: int | None = None
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute PSD per channel using Welch with robust defaults and guards.
 
@@ -74,13 +76,20 @@ def compute_psd_welch(data: np.ndarray, sfreq: float, n_per_seg: int | None = No
         psd = np.vstack(psd_list)
 
     # defensive cleanup: replace NaN/inf, floor tiny values to EPS
-    psd = np.nan_to_num(psd, nan=0.0, posinf=np.nanmax(psd) if np.isfinite(np.nanmax(psd)) else 0.0, neginf=0.0)
+    psd = np.nan_to_num(
+        psd,
+        nan=0.0,
+        posinf=np.nanmax(psd) if np.isfinite(np.nanmax(psd)) else 0.0,
+        neginf=0.0,
+    )
     psd = np.maximum(psd, EPS)
 
     return psd, freqs
 
 
-def bandpower_from_psd(psd: np.ndarray, freqs: np.ndarray, band: tuple[float, float]) -> np.ndarray:
+def bandpower_from_psd(
+    psd: np.ndarray, freqs: np.ndarray, band: tuple[float, float]
+) -> np.ndarray:
     """
     Integrate PSD across a frequency band per channel.
 

@@ -5,6 +5,7 @@ import numpy as np
 
 from src.eeg.features.spectrograms import compute_spectrogram
 
+
 def test_compute_spectrogram_shape():
     n_ch = 4
     sfreq = 256

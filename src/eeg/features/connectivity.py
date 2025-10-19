@@ -26,9 +26,13 @@ BANDS = {
 }
 
 
-def _bandpass_sos(data: np.ndarray, sfreq: float, low: float, high: float, order: int = 4) -> np.ndarray:
+def _bandpass_sos(
+    data: np.ndarray, sfreq: float, low: float, high: float, order: int = 4
+) -> np.ndarray:
     """Apply zero-phase bandpass filter using SOS (works on 1D arrays)."""
-    sos = butter(order, [low / (0.5 * sfreq), high / (0.5 * sfreq)], btype="band", output="sos")
+    sos = butter(
+        order, [low / (0.5 * sfreq), high / (0.5 * sfreq)], btype="band", output="sos"
+    )
     return sosfiltfilt(sos, data)
 
 
@@ -62,7 +66,12 @@ def compute_pli(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.abs(np.mean(np.sign(np.sin(ph)))))
 
 
-def plv_matrix(data: np.ndarray, sfreq: float, band: Tuple[float, float], nperseg: int | None = None) -> np.ndarray:
+def plv_matrix(
+    data: np.ndarray,
+    sfreq: float,
+    band: Tuple[float, float],
+    nperseg: int | None = None,
+) -> np.ndarray:
     """
     Compute pairwise PLV matrix for a single epoch (n_channels, n_samples) in given band.
 
@@ -72,7 +81,9 @@ def plv_matrix(data: np.ndarray, sfreq: float, band: Tuple[float, float], nperse
     n_ch = data.shape[0]
     low, high = band
     # bandpass each channel
-    filtered = np.stack([_bandpass_sos(data[ch], sfreq, low, high) for ch in range(n_ch)], axis=0)
+    filtered = np.stack(
+        [_bandpass_sos(data[ch], sfreq, low, high) for ch in range(n_ch)], axis=0
+    )
     phases = np.angle(hilbert(filtered))  # (n_ch, n_samples)
     mat = np.ones((n_ch, n_ch), dtype=float)
     for i in range(n_ch):
@@ -86,7 +97,9 @@ def plv_matrix(data: np.ndarray, sfreq: float, band: Tuple[float, float], nperse
 def pli_matrix(data: np.ndarray, sfreq: float, band: Tuple[float, float]) -> np.ndarray:
     n_ch = data.shape[0]
     low, high = band
-    filtered = np.stack([_bandpass_sos(data[ch], sfreq, low, high) for ch in range(n_ch)], axis=0)
+    filtered = np.stack(
+        [_bandpass_sos(data[ch], sfreq, low, high) for ch in range(n_ch)], axis=0
+    )
     phases = np.angle(hilbert(filtered))
     mat = np.zeros((n_ch, n_ch), dtype=float)
     for i in range(n_ch):
@@ -97,7 +110,12 @@ def pli_matrix(data: np.ndarray, sfreq: float, band: Tuple[float, float]) -> np.
     return mat
 
 
-def bandwise_phase_connectivity(data: np.ndarray, sfreq: float, metrics: Tuple[str, ...] = ("plv",), bands: Dict[str, Tuple[float, float]] | None = None) -> Dict[str, List[np.ndarray]]:
+def bandwise_phase_connectivity(
+    data: np.ndarray,
+    sfreq: float,
+    metrics: Tuple[str, ...] = ("plv",),
+    bands: Dict[str, Tuple[float, float]] | None = None,
+) -> Dict[str, List[np.ndarray]]:
     """
     Compute connectivity per canonical band and per requested metric.
 
@@ -124,16 +142,22 @@ def bandwise_phase_connectivity(data: np.ndarray, sfreq: float, metrics: Tuple[s
                 mat = np.zeros((n_ch, n_ch), dtype=float)
                 for i in range(n_ch):
                     for j in range(i + 1, n_ch):
-                        f, Cxy = coherence(data[i], data[j], fs=float(sfreq), nperseg=256)
+                        f, Cxy = coherence(
+                            data[i], data[j], fs=float(sfreq), nperseg=256
+                        )
                         idx = (f >= low) & (f <= high)
-                        mat[i, j] = mat[j, i] = float(np.nanmean(Cxy[idx])) if idx.any() else 0.0
+                        mat[i, j] = mat[j, i] = (
+                            float(np.nanmean(Cxy[idx])) if idx.any() else 0.0
+                        )
                 out["coh"].append(mat)
             else:
                 raise ValueError(f"Unknown connectivity metric: {m}")
     return out
 
 
-def save_connectivity_npz(path: Path, conn_dict: Dict[str, List[np.ndarray]], metadata: Dict | None = None) -> None:
+def save_connectivity_npz(
+    path: Path, conn_dict: Dict[str, List[np.ndarray]], metadata: Dict | None = None
+) -> None:
     """
     Save connectivity dict as compressed npz. conn_dict maps metric->list of matrices for bands.
 

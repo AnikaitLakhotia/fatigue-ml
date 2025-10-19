@@ -19,7 +19,9 @@ BANDS = {
 }
 
 
-def mean_pairwise_coherence(data: np.ndarray, sfreq: float, nperseg: int | None = None) -> Dict[str, float]:
+def mean_pairwise_coherence(
+    data: np.ndarray, sfreq: float, nperseg: int | None = None
+) -> Dict[str, float]:
     """
     Compute mean pairwise magnitude-squared coherence (Cxy) per canonical band.
 
@@ -47,7 +49,9 @@ def mean_pairwise_coherence(data: np.ndarray, sfreq: float, nperseg: int | None 
             for j in range(i + 1, n_chan):
                 xj = data[j]
                 try:
-                    f, Cxy = signal.coherence(xi, xj, fs=float(sfreq), nperseg=int(nperseg))
+                    f, Cxy = signal.coherence(
+                        xi, xj, fs=float(sfreq), nperseg=int(nperseg)
+                    )
                 except Exception:
                     # if coherence fails for a pair, skip it
                     continue

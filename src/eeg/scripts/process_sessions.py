@@ -11,7 +11,9 @@ from ..data.io import split_combined_csv_by_session, process_single_session
 logger = get_logger(__name__)
 
 
-def run_preprocess_stage(input_path: str | Path, output_dir: str | Path, cfg: Optional[dict] = None) -> List[Path]:
+def run_preprocess_stage(
+    input_path: str | Path, output_dir: str | Path, cfg: Optional[dict] = None
+) -> List[Path]:
     """
     Split combined CSV and process each session CSV to a preprocessed .fif.
 
@@ -42,8 +44,12 @@ def run_preprocess_stage(input_path: str | Path, output_dir: str | Path, cfg: Op
 
 def main(argv: List[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="process_sessions")
-    parser.add_argument("--input", type=str, required=True, help="Combined CSV input path")
-    parser.add_argument("--out", type=str, required=True, help="Output interim directory for FIFs")
+    parser.add_argument(
+        "--input", type=str, required=True, help="Combined CSV input path"
+    )
+    parser.add_argument(
+        "--out", type=str, required=True, help="Output interim directory for FIFs"
+    )
     args = parser.parse_args(argv)
     run_preprocess_stage(args.input, args.out, cfg=None)
 

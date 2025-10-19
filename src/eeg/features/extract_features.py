@@ -18,7 +18,10 @@ from src.eeg.utils.logger import get_logger
 from src.eeg.features.psd_features import compute_psd_welch, bandpowers
 from src.eeg.features.coherence_features import mean_pairwise_coherence
 from src.eeg.features.entropy_features import spectral_entropy, sample_entropy
-from src.eeg.features.timefreq_features import stft_spectrogram, band_mean_from_spectrogram
+from src.eeg.features.timefreq_features import (
+    stft_spectrogram,
+    band_mean_from_spectrogram,
+)
 from src.eeg.features.nonlinear_features import permutation_entropy, higuchi_fd
 
 logger = get_logger(__name__)
@@ -36,14 +39,18 @@ def register_feature(name: str):
     Registered functions must accept (epoch: np.ndarray, sfreq: float, per_channel: bool)
     and return a dict mapping feature name -> scalar.
     """
+
     def decorator(func: Callable[[np.ndarray, float, bool], Dict[str, Any]]):
         FEATURE_REGISTRY[name] = func
         return func
+
     return decorator
 
 
 @register_feature("psd_bandpowers")
-def feat_psd_bandpowers(epoch: np.ndarray, sfreq: float, per_channel: bool = False) -> Dict[str, Any]:
+def feat_psd_bandpowers(
+    epoch: np.ndarray, sfreq: float, per_channel: bool = False
+) -> Dict[str, Any]:
     """
     PSD-based band powers, ratios, PAF, spectral entropy and 1/f slope.
 
@@ -76,7 +83,11 @@ def feat_psd_bandpowers(epoch: np.ndarray, sfreq: float, per_channel: bool = Fal
         if per_channel:
             for ch in range(epoch.shape[0]):
                 for band in ("delta", "theta", "alpha", "beta", "gamma"):
-                    val = float(bp.get(band, np.zeros(epoch.shape[0]))[ch]) if band in bp else 0.0
+                    val = (
+                        float(bp.get(band, np.zeros(epoch.shape[0]))[ch])
+                        if band in bp
+                        else 0.0
+                    )
                     features[f"ch{ch}_{band}_power"] = val
 
         # Peak alpha frequency (PAF) aggregated across channels
@@ -129,7 +140,9 @@ def feat_psd_bandpowers(epoch: np.ndarray, sfreq: float, per_channel: bool = Fal
 
 
 @register_feature("coherence")
-def feat_coherence(epoch: np.ndarray, sfreq: float, per_channel: bool = False) -> Dict[str, Any]:
+def feat_coherence(
+    epoch: np.ndarray, sfreq: float, per_channel: bool = False
+) -> Dict[str, Any]:
     """
     Mean pairwise coherence per canonical band aggregated across channel pairs.
     """
@@ -142,7 +155,9 @@ def feat_coherence(epoch: np.ndarray, sfreq: float, per_channel: bool = False) -
 
 
 @register_feature("timefreq_summary")
-def feat_timefreq(epoch: np.ndarray, sfreq: float, per_channel: bool = False) -> Dict[str, Any]:
+def feat_timefreq(
+    epoch: np.ndarray, sfreq: float, per_channel: bool = False
+) -> Dict[str, Any]:
     """
     STFT-derived band-power summary aggregated across channels/time.
     """
@@ -152,11 +167,15 @@ def feat_timefreq(epoch: np.ndarray, sfreq: float, per_channel: bool = False) ->
         return {f"tf_{k}_mean": float(v) for k, v in bmean.items()}
     except Exception:
         logger.exception("feat_timefreq_failed")
-        return {f"tf_{k}_mean": 0.0 for k in ("delta", "theta", "alpha", "beta", "gamma")}
+        return {
+            f"tf_{k}_mean": 0.0 for k in ("delta", "theta", "alpha", "beta", "gamma")
+        }
 
 
 @register_feature("nonlinear")
-def feat_nonlinear(epoch: np.ndarray, sfreq: float, per_channel: bool = False) -> Dict[str, Any]:
+def feat_nonlinear(
+    epoch: np.ndarray, sfreq: float, per_channel: bool = False
+) -> Dict[str, Any]:
     """
     Permutation entropy, Higuchi FD and sample entropy aggregated across channels.
     """
@@ -237,7 +256,9 @@ def extract_all_features(
     # Basic QC: count channels with total==0 if totals present
     total_cols = [c for c in df.columns if c.startswith("total_")]
     if total_cols:
-        df["num_channels_with_zero_total"] = df[total_cols].apply(lambda r: int((r == 0).sum()), axis=1)
+        df["num_channels_with_zero_total"] = df[total_cols].apply(
+            lambda r: int((r == 0).sum()), axis=1
+        )
         df["has_any_zero_total"] = df["num_channels_with_zero_total"] > 0
     else:
         df["num_channels_with_zero_total"] = 0
@@ -247,19 +268,31 @@ def extract_all_features(
 
 
 def extract_features_from_epochs(
-    epochs: np.ndarray, sfreq: float, enabled: Optional[List[str]] = None, per_channel: bool = False
+    epochs: np.ndarray,
+    sfreq: float,
+    enabled: Optional[List[str]] = None,
+    per_channel: bool = False,
 ) -> pd.DataFrame:
     """
     Backwards-compatible wrapper around extract_all_features.
     """
-    return extract_all_features(epochs=epochs, sfreq=sfreq, enabled=enabled, per_channel=per_channel)
+    return extract_all_features(
+        epochs=epochs, sfreq=sfreq, enabled=enabled, per_channel=per_channel
+    )
 
 
-def _psd_welch(data: np.ndarray, sfreq: float, n_per_seg: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+def _psd_welch(
+    data: np.ndarray, sfreq: float, n_per_seg: Optional[int] = None
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Test helper: thin wrapper exposing compute_psd_welch for tests.
     """
     return compute_psd_welch(data, sfreq, n_per_seg)
 
 
-__all__ = ["extract_all_features", "extract_features_from_epochs", "_psd_welch", "FEATURE_REGISTRY"]
+__all__ = [
+    "extract_all_features",
+    "extract_features_from_epochs",
+    "_psd_welch",
+    "FEATURE_REGISTRY",
+]

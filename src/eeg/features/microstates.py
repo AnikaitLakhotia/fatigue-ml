@@ -13,7 +13,10 @@ from typing import Tuple, Dict, Any
 import numpy as np
 from sklearn.cluster import KMeans
 
-def compute_microstates(topographies: np.ndarray, n_states: int = 4, random_state: int | None = None) -> Dict[str, Any]:
+
+def compute_microstates(
+    topographies: np.ndarray, n_states: int = 4, random_state: int | None = None
+) -> Dict[str, Any]:
     """
     Cluster instantaneous topographies into microstate maps and return segmentation.
 
@@ -51,5 +54,12 @@ def compute_microstates(topographies: np.ndarray, n_states: int = 4, random_stat
             runlen = 1
             prev = l
     durations[prev].append(runlen)
-    mean_duration = {k: float(np.mean(durations[k])) if durations[k] else 0.0 for k in durations}
-    return {"maps": maps, "labels": labels, "coverage": coverage, "mean_duration": mean_duration}
+    mean_duration = {
+        k: float(np.mean(durations[k])) if durations[k] else 0.0 for k in durations
+    }
+    return {
+        "maps": maps,
+        "labels": labels,
+        "coverage": coverage,
+        "mean_duration": mean_duration,
+    }

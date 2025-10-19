@@ -26,13 +26,17 @@ BANDS = {
 }
 
 
-def _bandpass_signal(sig: np.ndarray, sfreq: float, band: Tuple[float, float]) -> np.ndarray:
+def _bandpass_signal(
+    sig: np.ndarray, sfreq: float, band: Tuple[float, float]
+) -> np.ndarray:
     """Bandpass a 1D signal using MNE's filter."""
     l, h = band
     return mne.filter.filter_data(sig, sfreq, l_freq=l, h_freq=h, verbose=False)
 
 
-def _analytic_signal_array(data: np.ndarray, sfreq: float, band: Tuple[float, float]) -> np.ndarray:
+def _analytic_signal_array(
+    data: np.ndarray, sfreq: float, band: Tuple[float, float]
+) -> np.ndarray:
     """
     Compute analytic signals per channel after bandpass.
 
@@ -93,7 +97,9 @@ def pli_matrix(data: np.ndarray, sfreq: float, band: Tuple[float, float]) -> np.
     return mat
 
 
-def imag_coherence_matrix(data: np.ndarray, sfreq: float, band: Tuple[float, float]) -> np.ndarray:
+def imag_coherence_matrix(
+    data: np.ndarray, sfreq: float, band: Tuple[float, float]
+) -> np.ndarray:
     """
     Compute approximate imaginary coherence matrix.
 

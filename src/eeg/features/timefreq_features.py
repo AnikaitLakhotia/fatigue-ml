@@ -14,7 +14,9 @@ BANDS = {
 }
 
 
-def stft_spectrogram(data: np.ndarray, sfreq: float, nperseg: int | None = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def stft_spectrogram(
+    data: np.ndarray, sfreq: float, nperseg: int | None = None
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute STFT spectrograms per channel and stack into array.
 
@@ -31,7 +33,9 @@ def stft_spectrogram(data: np.ndarray, sfreq: float, nperseg: int | None = None)
     freqs = None
     times = None
     for ch in range(data.shape[0]):
-        f, t, Sxx = signal.spectrogram(data[ch], fs=sfreq, nperseg=nperseg, noverlap=nperseg // 2)
+        f, t, Sxx = signal.spectrogram(
+            data[ch], fs=sfreq, nperseg=nperseg, noverlap=nperseg // 2
+        )
         if freqs is None:
             freqs = f
             times = t

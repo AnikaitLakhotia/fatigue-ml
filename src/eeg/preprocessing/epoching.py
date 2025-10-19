@@ -12,7 +12,9 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def sliding_window_epochs_from_raw(raw, window_sec: float = 10.0, stride_sec: float | None = None) -> Tuple[np.ndarray, np.ndarray]:
+def sliding_window_epochs_from_raw(
+    raw, window_sec: float = 10.0, stride_sec: float | None = None
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Create sliding-window epochs from an MNE Raw object.
 
@@ -39,11 +41,22 @@ def sliding_window_epochs_from_raw(raw, window_sec: float = 10.0, stride_sec: fl
         data, _ = raw[:, s:e]
         epochs.append(data.copy())
         starts_sec.append(s / sfreq)
-    logger.info("Created %d epochs (window=%.2fs, stride=%.2fs)", len(epochs), window_sec, stride_sec)
-    return np.stack(epochs, axis=0) if epochs else np.empty((0, raw.info["nchan"], win_samp)), np.array(starts_sec)
+    logger.info(
+        "Created %d epochs (window=%.2fs, stride=%.2fs)",
+        len(epochs),
+        window_sec,
+        stride_sec,
+    )
+    return (
+        np.stack(epochs, axis=0)
+        if epochs
+        else np.empty((0, raw.info["nchan"], win_samp))
+    ), np.array(starts_sec)
 
 
-def make_epochs(raw, cfg: Optional[Mapping] = None) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+def make_epochs(
+    raw, cfg: Optional[Mapping] = None
+) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
     """
     High-level wrapper to generate epochs and metadata.
 
@@ -65,7 +78,12 @@ def make_epochs(raw, cfg: Optional[Mapping] = None) -> Tuple[np.ndarray, np.ndar
     win = float(ep_cfg.get("length", 10.0))
     overlap = float(ep_cfg.get("overlap", 0.5))
     stride = win * (1 - overlap)
-    epochs, starts = sliding_window_epochs_from_raw(raw, window_sec=win, stride_sec=stride)
-    meta = [{"epoch_index": int(i), "start_time_sec": float(s), "duration_sec": win} for i, s in enumerate(starts)]
+    epochs, starts = sliding_window_epochs_from_raw(
+        raw, window_sec=win, stride_sec=stride
+    )
+    meta = [
+        {"epoch_index": int(i), "start_time_sec": float(s), "duration_sec": win}
+        for i, s in enumerate(starts)
+    ]
     logger.info("make_epochs: created %d epochs", len(meta))
     return epochs, starts, meta

@@ -31,7 +31,9 @@ def zscore_normalize_epochs(epochs: np.ndarray) -> np.ndarray:
     return (epochs - mean) / (std + 1e-8)
 
 
-def robust_scale_dataframe(df: pd.DataFrame, columns: Optional[Sequence[str]] = None) -> pd.DataFrame:
+def robust_scale_dataframe(
+    df: pd.DataFrame, columns: Optional[Sequence[str]] = None
+) -> pd.DataFrame:
     """
     Return a copy of df with selected columns scaled with RobustScaler (median/IQR).
 

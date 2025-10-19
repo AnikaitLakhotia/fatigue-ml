@@ -51,7 +51,9 @@ pre-commit = "^3.6"
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-# Tooling configuration
+# -----------------------------
+# Tooling Configuration
+# -----------------------------
 
 [tool.black]
 line-length = 88

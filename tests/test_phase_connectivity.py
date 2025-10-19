@@ -9,12 +9,18 @@ These tests verify:
 from __future__ import annotations
 import numpy as np
 
-from src.eeg.features.phase_connectivity import plv_matrix, pli_matrix, bandwise_phase_connectivity
+from src.eeg.features.phase_connectivity import (
+    plv_matrix,
+    pli_matrix,
+    bandwise_phase_connectivity,
+)
 
 RNG = np.random.default_rng(42)
 
 
-def _sine_pair(n_channels: int = 4, n_samples: int = 1024, sfreq: int = 256) -> np.ndarray:
+def _sine_pair(
+    n_channels: int = 4, n_samples: int = 1024, sfreq: int = 256
+) -> np.ndarray:
     """
     Create a deterministic multi-channel signal where even channels share the same 10 Hz
     base (thus expected to be coherent), and odd channels vary slightly.
@@ -26,7 +32,9 @@ def _sine_pair(n_channels: int = 4, n_samples: int = 1024, sfreq: int = 256) -> 
         if i % 2 == 0:
             data[i] = base
         else:
-            data[i] = np.sin(2 * np.pi * (10.0 + i) * t) + 0.05 * RNG.normal(size=n_samples)
+            data[i] = np.sin(2 * np.pi * (10.0 + i) * t) + 0.05 * RNG.normal(
+                size=n_samples
+            )
     return data
 
 

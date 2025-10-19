@@ -53,7 +53,13 @@ def compute_spectrogram(
     freqs = None
     times = None
     for ch in range(n_ch):
-        f, t, Sxx = signal.spectrogram(epoch[ch], fs=float(sfreq), nperseg=nperseg, noverlap=noverlap, scaling=scaling)
+        f, t, Sxx = signal.spectrogram(
+            epoch[ch],
+            fs=float(sfreq),
+            nperseg=nperseg,
+            noverlap=noverlap,
+            scaling=scaling,
+        )
         if freqs is None:
             freqs, times = f, t
         S_list.append(Sxx)
@@ -75,7 +81,13 @@ def log_normalize_spectrogram(S: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return np.log10(S + eps)
 
 
-def save_spectrograms_npz(path: Path, specs: np.ndarray, freqs: np.ndarray, times: np.ndarray, metadata: Dict[str, Any] | None = None) -> None:
+def save_spectrograms_npz(
+    path: Path,
+    specs: np.ndarray,
+    freqs: np.ndarray,
+    times: np.ndarray,
+    metadata: Dict[str, Any] | None = None,
+) -> None:
     """
     Save spectrogram tensor as compressed NPZ along with metadata.
 
@@ -87,10 +99,18 @@ def save_spectrograms_npz(path: Path, specs: np.ndarray, freqs: np.ndarray, time
         metadata: optional dict of scalars/strings (will be saved as JSON-like small dict)
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(str(path), specs=specs, freqs=freqs, times=times, metadata=metadata or {})
-    
+    np.savez_compressed(
+        str(path), specs=specs, freqs=freqs, times=times, metadata=metadata or {}
+    )
 
-def save_spectrograms_zarr(path: Path, specs: np.ndarray, freqs: np.ndarray, times: np.ndarray, metadata: Dict[str, Any] | None = None) -> None:
+
+def save_spectrograms_zarr(
+    path: Path,
+    specs: np.ndarray,
+    freqs: np.ndarray,
+    times: np.ndarray,
+    metadata: Dict[str, Any] | None = None,
+) -> None:
     """
     Save spectrograms using zarr (chunked). Falls back to NPZ if zarr not installed.
 
@@ -106,7 +126,12 @@ def save_spectrograms_zarr(path: Path, specs: np.ndarray, freqs: np.ndarray, tim
 
     root = zarr.open_group(str(path), mode="w")
     # choose chunking that keeps freq/time chunked sensibly
-    root.create_dataset("specs", data=specs, chunks=(1, specs.shape[1], specs.shape[2], specs.shape[3]), compressor=zarr.Blosc(cname="zstd", clevel=3))
+    root.create_dataset(
+        "specs",
+        data=specs,
+        chunks=(1, specs.shape[1], specs.shape[2], specs.shape[3]),
+        compressor=zarr.Blosc(cname="zstd", clevel=3),
+    )
     root.create_dataset("freqs", data=freqs)
     root.create_dataset("times", data=times)
     root.attrs["metadata"] = metadata or {}

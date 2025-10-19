@@ -12,7 +12,14 @@ from typing import List, Tuple
 import numpy as np
 from sklearn.cluster import KMeans
 
-def extract_patches_from_spectrogram(S: np.ndarray, freq_bins: int, time_bins: int, stride_freq: int = 1, stride_time: int = 1) -> np.ndarray:
+
+def extract_patches_from_spectrogram(
+    S: np.ndarray,
+    freq_bins: int,
+    time_bins: int,
+    stride_freq: int = 1,
+    stride_time: int = 1,
+) -> np.ndarray:
     """
     Extract patches from spectrogram S (n_channels, n_freqs, n_times).
 
@@ -25,14 +32,22 @@ def extract_patches_from_spectrogram(S: np.ndarray, freq_bins: int, time_bins: i
     patches = []
     for f0 in range(0, n_freq - freq_bins + 1, stride_freq):
         for t0 in range(0, n_time - time_bins + 1, stride_time):
-            patch = S[:, f0:f0+freq_bins, t0:t0+time_bins]
+            patch = S[:, f0 : f0 + freq_bins, t0 : t0 + time_bins]
             patches.append(patch.ravel())
     if not patches:
         return np.zeros((0, n_ch * freq_bins * time_bins))
     return np.stack(patches, axis=0)
 
 
-def sample_patches_from_epochs(S_list: List[np.ndarray], n_patches: int = 100, freq_bins: int = 8, time_bins: int = 8, stride_freq: int = 4, stride_time: int = 4, seed: int | None = None) -> np.ndarray:
+def sample_patches_from_epochs(
+    S_list: List[np.ndarray],
+    n_patches: int = 100,
+    freq_bins: int = 8,
+    time_bins: int = 8,
+    stride_freq: int = 4,
+    stride_time: int = 4,
+    seed: int | None = None,
+) -> np.ndarray:
     """
     Randomly sample patches across multiple spectrograms.
 
@@ -42,11 +57,15 @@ def sample_patches_from_epochs(S_list: List[np.ndarray], n_patches: int = 100, f
     rng = np.random.default_rng(seed)
     all_patches = []
     for S in S_list:
-        p = extract_patches_from_spectrogram(S, freq_bins, time_bins, stride_freq, stride_time)
+        p = extract_patches_from_spectrogram(
+            S, freq_bins, time_bins, stride_freq, stride_time
+        )
         if p.shape[0] > 0:
             all_patches.append(p)
     if not all_patches:
-        return np.zeros((0, freq_bins * time_bins * (S_list[0].shape[0] if S_list else 1)))
+        return np.zeros(
+            (0, freq_bins * time_bins * (S_list[0].shape[0] if S_list else 1))
+        )
     all_p = np.vstack(all_patches)
     if all_p.shape[0] <= n_patches:
         return all_p
@@ -54,7 +73,9 @@ def sample_patches_from_epochs(S_list: List[np.ndarray], n_patches: int = 100, f
     return all_p[idx]
 
 
-def build_vq_codebook(patches: np.ndarray, n_clusters: int = 256, random_state: int | None = None) -> KMeans:
+def build_vq_codebook(
+    patches: np.ndarray, n_clusters: int = 256, random_state: int | None = None
+) -> KMeans:
     """
     Fit a KMeans codebook on patch vectors.
 

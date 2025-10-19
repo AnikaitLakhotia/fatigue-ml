@@ -11,7 +11,10 @@ from pathlib import Path
 import numpy as np
 from typing import Any
 
-def save_array_zarr_or_npz(path: Path, arr: np.ndarray, metadata: dict | None = None) -> None:
+
+def save_array_zarr_or_npz(
+    path: Path, arr: np.ndarray, metadata: dict | None = None
+) -> None:
     try:
         import zarr  # type: ignore
     except Exception:
@@ -23,9 +26,11 @@ def save_array_zarr_or_npz(path: Path, arr: np.ndarray, metadata: dict | None = 
     store.create_dataset("arr", data=arr, compressor=zarr.Blosc(cname="zstd", clevel=3))
     store.attrs["metadata"] = metadata or {}
 
+
 def load_array_zarr_or_npz(path: Path):
     try:
         import zarr  # type: ignore
+
         g = zarr.open_group(str(path), mode="r")
         return g["arr"][:], dict(g.attrs)
     except Exception:

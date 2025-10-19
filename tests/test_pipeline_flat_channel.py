@@ -41,4 +41,6 @@ def test_pipeline_handles_flat_channel(tmp_path):
     # Assert not all totals are zero (channels other than the flat one should have power)
     sums = df[total_cols].sum(axis=0)
     # at least one channel total should be > 0
-    assert (sums > 0).any(), "All channel totals are zero — extractor failed to handle flat channel"
+    assert (
+        sums > 0
+    ).any(), "All channel totals are zero — extractor failed to handle flat channel"

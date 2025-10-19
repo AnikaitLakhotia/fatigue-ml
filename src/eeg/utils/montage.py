@@ -37,7 +37,9 @@ def load_standard_montage(name: str = "standard_1020") -> mne.channels.DigMontag
         raise
 
 
-def apply_montage_to_raw(raw: mne.io.BaseRaw, montage_name: str = "standard_1020") -> mne.io.BaseRaw:
+def apply_montage_to_raw(
+    raw: mne.io.BaseRaw, montage_name: str = "standard_1020"
+) -> mne.io.BaseRaw:
     """
     Attach a montage to an MNE Raw object in-place.
 

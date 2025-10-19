@@ -55,6 +55,12 @@ def run_pipeline(cfg: Dict[str, Any]) -> None:
         out_dir = data_cfg.get("features_out", "data/processed/features")
         # Here we call existing extract_features script per-file
         from pathlib import Path
+
         for f in sorted(Path(in_dir).glob("*.fif")):
-            extract_features_from_session(f, Path(out_dir), window=run_features.get("window", 10.0), overlap=run_features.get("overlap", 0.5))
+            extract_features_from_session(
+                f,
+                Path(out_dir),
+                window=run_features.get("window", 10.0),
+                overlap=run_features.get("overlap", 0.5),
+            )
     logger.info("Pipeline complete.")

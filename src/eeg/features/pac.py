@@ -10,9 +10,15 @@ from typing import List, Tuple
 import numpy as np
 from scipy.signal import hilbert, butter, sosfiltfilt
 
-def _bandpass(epoch: np.ndarray, sfreq: float, low: float, high: float, order: int = 4) -> np.ndarray:
+
+def _bandpass(
+    epoch: np.ndarray, sfreq: float, low: float, high: float, order: int = 4
+) -> np.ndarray:
     from scipy.signal import butter, sosfiltfilt
-    sos = butter(order, [low / (0.5 * sfreq), high / (0.5 * sfreq)], btype="band", output="sos")
+
+    sos = butter(
+        order, [low / (0.5 * sfreq), high / (0.5 * sfreq)], btype="band", output="sos"
+    )
     return sosfiltfilt(sos, epoch)
 
 
@@ -32,7 +38,9 @@ def _modulation_index_tort(phase, amp, n_bins=18):
     """
     bin_edges = np.linspace(-np.pi, np.pi, n_bins + 1)
     idx = np.digitize(phase, bin_edges) - 1
-    amp_means = np.array([amp[idx == b].mean() if np.any(idx == b) else 0.0 for b in range(n_bins)])
+    amp_means = np.array(
+        [amp[idx == b].mean() if np.any(idx == b) else 0.0 for b in range(n_bins)]
+    )
     amp_means = amp_means + 1e-12
     p = amp_means / amp_means.sum()
     # KL divergence to uniform
@@ -41,7 +49,13 @@ def _modulation_index_tort(phase, amp, n_bins=18):
     return float(mi)
 
 
-def comodulogram_epoch(epoch: np.ndarray, sfreq: float, phase_bands: List[Tuple[float, float]], amp_bands: List[Tuple[float, float]], n_bins: int = 18) -> np.ndarray:
+def comodulogram_epoch(
+    epoch: np.ndarray,
+    sfreq: float,
+    phase_bands: List[Tuple[float, float]],
+    amp_bands: List[Tuple[float, float]],
+    n_bins: int = 18,
+) -> np.ndarray:
     """
     Compute comodulogram for multi-channel epoch by averaging per-channel comod indices.
 

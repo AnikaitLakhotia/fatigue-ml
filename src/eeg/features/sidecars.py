@@ -47,7 +47,9 @@ def compute_spectrogram(
     f = None
     t = None
     for ch in range(epoch.shape[0]):
-        f_ch, t_ch, Sxx = signal.spectrogram(epoch[ch], fs=sfreq, nperseg=nperseg, noverlap=noverlap, scaling="density")
+        f_ch, t_ch, Sxx = signal.spectrogram(
+            epoch[ch], fs=sfreq, nperseg=nperseg, noverlap=noverlap, scaling="density"
+        )
         if f is None:
             f = f_ch
             t = t_ch
@@ -77,7 +79,9 @@ def save_epoch_spectrograms(
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    S, freqs, times = compute_spectrogram(epoch, sfreq, nperseg=nperseg, noverlap=noverlap)
+    S, freqs, times = compute_spectrogram(
+        epoch, sfreq, nperseg=nperseg, noverlap=noverlap
+    )
     np.savez_compressed(out_path, S=S, freqs=freqs, times=times, sfreq=sfreq)
     logger.info("Saved spectrogram sidecar %s", out_path)
     return out_path
@@ -120,7 +124,7 @@ def sliding_window_connectivity(
         step_samples = max(1, win_samples // 2)
 
     starts = list(range(0, max(1, n_samples - win_samples + 1), step_samples))
-    times = np.array([ (s + win_samples / 2) / sfreq for s in starts ])
+    times = np.array([(s + win_samples / 2) / sfreq for s in starts])
     n_windows = len(starts)
     n_bands = len(bands)
     n_ch = epoch.shape[0]
@@ -135,11 +139,16 @@ def sliding_window_connectivity(
         for i in range(n_ch):
             for j in range(i + 1, n_ch):
                 try:
-                    f, Cxy = signal.coherence(window_data[i], window_data[j], fs=sfreq, nperseg=nperseg or min(256, window_data.shape[1]))
+                    f, Cxy = signal.coherence(
+                        window_data[i],
+                        window_data[j],
+                        fs=sfreq,
+                        nperseg=nperseg or min(256, window_data.shape[1]),
+                    )
                 except Exception:
                     # fallback to zeros if coherence fails
-                    Cxy = np.zeros((len(f),)) if 'f' in locals() else np.zeros((1,))
-                    f = f if 'f' in locals() else np.array([0.0])
+                    Cxy = np.zeros((len(f),)) if "f" in locals() else np.zeros((1,))
+                    f = f if "f" in locals() else np.array([0.0])
                 for bi, band in enumerate(bands):
                     idx = _band_indices(f, band)
                     if idx.any():
@@ -169,8 +178,17 @@ def save_sliding_connectivity(
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Computing sliding connectivity (win=%.2fs, step=%.2fs, bands=%s)", win_sec, step_sec, bands)
-    conn, times = sliding_window_connectivity(epoch, sfreq, win_sec, step_sec, bands, nperseg=nperseg)
-    np.savez_compressed(out_path, conn=conn, times=times, bands=np.array(bands), sfreq=sfreq)
+    logger.info(
+        "Computing sliding connectivity (win=%.2fs, step=%.2fs, bands=%s)",
+        win_sec,
+        step_sec,
+        bands,
+    )
+    conn, times = sliding_window_connectivity(
+        epoch, sfreq, win_sec, step_sec, bands, nperseg=nperseg
+    )
+    np.savez_compressed(
+        out_path, conn=conn, times=times, bands=np.array(bands), sfreq=sfreq
+    )
     logger.info("Saved connectivity sidecar %s", out_path)
     return out_path
