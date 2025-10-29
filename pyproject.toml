@@ -24,6 +24,7 @@ seaborn = "^0.13"
 torch = "^2.2"
 torchaudio = "^2.2"
 pytorch-lightning = "^2.2"
+tensorflow = "^2.15"  
 
 # Configuration, experiment management, and tracking
 hydra-core = "^1.3"

@@ -7,6 +7,9 @@ This module loads preprocessed .fif files, handles flat-channel detection &
 interpolation, constructs epochs, calls the feature registry, and writes
 parquet + optional sidecars.
 
+Additionally, it exports preprocessed epochs in .npz format for
+contrastive self-supervised learning (SSL).
+
 Exports:
   - process_single_fif(raw_path: Path, out_dir: Path, ...) -> None
   - CLI via main()
@@ -55,6 +58,32 @@ def _detect_flat_or_bad_channels(
     return bads
 
 
+def save_epochs_for_ssl(
+    epochs: np.ndarray, output_dir: Path, session_id: str | None = None
+) -> Path:
+    """
+    Save preprocessed, epoched EEG data for contrastive self-supervised training.
+
+    Args:
+        epochs: np.ndarray, shape (n_epochs, n_channels, n_samples)
+        output_dir: directory to save files
+        session_id: optional session identifier
+
+    Returns:
+        Path to saved .npz file
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sid = session_id or "session"
+    filename = f"{sid}_epochs_for_ssl.npz"
+    out_path = output_dir / filename
+
+    np.savez_compressed(out_path, epochs=epochs.astype(np.float32))
+    logger.info("[SSL Export] Saved preprocessed epochs for SSL: %s (shape=%s)", out_path, epochs.shape)
+    return out_path
+
+
 def process_single_fif(
     raw_path: Path,
     out_dir: Path,
@@ -68,14 +97,14 @@ def process_single_fif(
     connectivity_bands: Optional[Sequence[Tuple[float, float]]] = None,
 ) -> None:
     """
-    Process a single .fif into features and optional sidecars.
+    Process a single .fif into features, optional sidecars, and SSL-ready epochs.
 
     See src.eeg.features.extract_features.extract_all_features for feature behavior.
     """
     logger.info("Processing %s", raw_path)
     raw = mne.io.read_raw_fif(raw_path, preload=False, verbose=False)
-
     raw.load_data()
+
     bads = _detect_flat_or_bad_channels(raw)
     if bads:
         logger.warning("Detected flat/bad channels: %s", bads)
@@ -118,6 +147,12 @@ def process_single_fif(
     if epochs.size == 0:
         logger.warning("No epochs extracted for %s — skipping.", raw_path)
         return
+
+    # -----------------------------------------------------
+    # [ADDED] Save epochs for contrastive SSL
+    # -----------------------------------------------------
+    ssl_save_dir = out_dir / "ssl_epochs"
+    _ = save_epochs_for_ssl(epochs, ssl_save_dir, session_id=raw_path.stem)
 
     try:
         df = extract_all_features(epochs, sfreq, per_channel=per_channel)
