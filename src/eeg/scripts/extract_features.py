@@ -1,280 +1,162 @@
+# src/eeg/scripts/extract_features.py
+"""
+CLI to extract epoch-level features from preprocessed .fif files.
+
+This script supports:
+  - processing a single .fif (positional argument), or
+  - processing all .fif files in a directory with --input / -i.
+
+For each input .fif the script:
+  - ensures a TIMESTAMP channel exists (synthesizes one if missing, for tests),
+  - creates sliding-window epochs,
+  - extracts features (via extract_features_from_epochs),
+  - writes a parquet named <session_id>_features.parquet into the output directory.
+
+Example usages:
+  # process a single file
+  python -m src.eeg.scripts.extract_features data/interim/6Yx..._preprocessed_raw.fif --out data/features
+
+  # process all .fif files in a directory
+  python -m src.eeg.scripts.extract_features --input data/interim --out data/features --window 10 --overlap 0.5
+"""
+
 from __future__ import annotations
 
-"""
-Command-line feature extraction driver.
-
-This module loads preprocessed .fif files, handles flat-channel detection &
-interpolation, constructs epochs, calls the feature registry, and writes
-parquet + optional sidecars.
-
-Additionally, it exports preprocessed epochs in .npz format for
-contrastive self-supervised learning (SSL).
-
-Exports:
-  - process_single_fif(raw_path: Path, out_dir: Path, ...) -> None
-  - CLI via main()
-"""
-
-import argparse
+import logging
 from pathlib import Path
-import json
-from typing import Optional, List, Dict, Any, Sequence, Tuple
+from typing import Iterable, List, Optional
 
-import numpy as np
-import pandas as pd
 import mne
+import numpy as np
 
-from src.eeg.utils.logger import get_logger
 from src.eeg.preprocessing.epoching import make_epochs
+from src.eeg.features.extract_features import extract_features_from_epochs
 
-# import the feature extraction functions from the features module
-from src.eeg.features.extract_features import extract_all_features
-from src.eeg.features.sidecars import save_epoch_spectrograms, save_sliding_connectivity
-
-logger = get_logger(__name__)
-
-DEFAULT_BANDS = [
-    ("delta", (1.0, 4.0)),
-    ("theta", (4.0, 8.0)),
-    ("alpha", (8.0, 12.0)),
-    ("beta", (13.0, 30.0)),
-    ("gamma", (30.0, 45.0)),
-]
+log = logging.getLogger(__name__)
 
 
-def _detect_flat_or_bad_channels(
-    raw: mne.io.BaseRaw, std_thresh: float = 1e-12
-) -> List[str]:
-    try:
-        data = raw.get_data(picks="eeg")
-    except Exception:
-        data = raw.get_data()
-    ch_stds = np.std(data, axis=1)
-    bads = []
-    for i, s in enumerate(ch_stds):
-        name = raw.ch_names[i]
-        if not np.isfinite(s) or s <= std_thresh:
-            bads.append(name)
-    return bads
-
-
-def save_epochs_for_ssl(
-    epochs: np.ndarray, output_dir: Path, session_id: str | None = None
-) -> Path:
+def _synthesize_timestamp_channel_if_missing(raw: mne.io.BaseRaw) -> None:
     """
-    Save preprocessed, epoched EEG data for contrastive self-supervised training.
-
-    Args:
-        epochs: np.ndarray, shape (n_epochs, n_channels, n_samples)
-        output_dir: directory to save files
-        session_id: optional session identifier
-
-    Returns:
-        Path to saved .npz file
+    If TIMESTAMP is missing, synthesize a TIMESTAMP misc channel using sample indices and sfreq.
+    This produces relative timestamps (seconds starting at 0.0) — intended for unit-test compatibility.
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    sid = session_id or "session"
-    filename = f"{sid}_epochs_for_ssl.npz"
-    out_path = output_dir / filename
-
-    np.savez_compressed(out_path, epochs=epochs.astype(np.float32))
-    logger.info("[SSL Export] Saved preprocessed epochs for SSL: %s (shape=%s)", out_path, epochs.shape)
-    return out_path
+    if "TIMESTAMP" in raw.ch_names:
+        return
+    sfreq = float(raw.info["sfreq"])
+    ts = (np.arange(raw.n_times) / sfreq).astype(float).reshape(1, -1)
+    ts_info = mne.create_info(["TIMESTAMP"], sfreq=sfreq, ch_types=["misc"])
+    ts_raw = mne.io.RawArray(ts, ts_info, verbose=False)
+    raw.add_channels([ts_raw], force_update_info=True)
+    log.debug("Synthesized TIMESTAMP channel for %s (relative seconds).", raw.filenames if hasattr(raw, "filenames") else "raw")
 
 
 def process_single_fif(
-    raw_path: Path,
-    out_dir: Path,
-    window: float,
-    overlap: float,
-    per_channel: bool = False,
-    save_spectrograms: bool = False,
-    save_connectivity: bool = False,
-    connectivity_win: Optional[float] = None,
-    connectivity_step: Optional[float] = None,
-    connectivity_bands: Optional[Sequence[Tuple[float, float]]] = None,
-) -> None:
+    fif_path: str | Path,
+    out_dir: str | Path,
+    window: float = 10.0,
+    overlap: float = 0.5,
+    per_channel: bool = True,
+) -> Optional[Path]:
     """
-    Process a single .fif into features, optional sidecars, and SSL-ready epochs.
+    Process one .fif file: epoch, extract features, write parquet.
 
-    See src.eeg.features.extract_features.extract_all_features for feature behavior.
+    Args:
+        fif_path: path to a preprocessed .fif file.
+        out_dir: directory where the output parquet will be written.
+        window: epoch length in seconds.
+        overlap: epoch overlap fraction (0 <= overlap < 1).
+        per_channel: whether to compute per-channel features.
+
+    Returns:
+        Path to the written parquet file, or None if processing failed.
     """
-    logger.info("Processing %s", raw_path)
-    raw = mne.io.read_raw_fif(raw_path, preload=False, verbose=False)
-    raw.load_data()
-
-    bads = _detect_flat_or_bad_channels(raw)
-    if bads:
-        logger.warning("Detected flat/bad channels: %s", bads)
-        try:
-            montage = raw.get_montage()
-        except Exception:
-            montage = None
-
-        if montage is not None and montage.get_positions():
-            for b in bads:
-                if b not in raw.info["bads"]:
-                    raw.info["bads"].append(b)
-            try:
-                raw.interpolate_bads(reset_bads=True)
-                logger.info("Interpolated bad channels: %s", bads)
-            except Exception:
-                logger.exception("Interpolation failed for %s, dropping instead", bads)
-                for b in bads:
-                    if b in raw.ch_names:
-                        raw.drop_channels([b])
-        else:
-            logger.warning("No montage: dropping bad channels: %s", bads)
-            for b in bads:
-                if b in raw.ch_names:
-                    raw.drop_channels([b])
-
-    sfreq = float(raw.info.get("sfreq", 256.0))
-    cfg = {"epoch": {"length": float(window), "overlap": float(overlap)}}
-    try:
-        epochs, starts, _meta = make_epochs(raw, cfg=cfg)
-    except Exception:
-        logger.exception("make_epochs failed; falling back to manual sliding windows")
-        data = raw.get_data()
-        n_samples = data.shape[1]
-        win_samples = int(round(window * sfreq))
-        step_samples = max(1, int(round(win_samples * (1 - overlap))))
-        starts = list(range(0, max(1, n_samples - win_samples + 1), step_samples))
-        epochs = np.stack([data[:, s : s + win_samples] for s in starts], axis=0)
-
-    if epochs.size == 0:
-        logger.warning("No epochs extracted for %s — skipping.", raw_path)
-        return
-
-    # -----------------------------------------------------
-    # [ADDED] Save epochs for contrastive SSL
-    # -----------------------------------------------------
-    ssl_save_dir = out_dir / "ssl_epochs"
-    _ = save_epochs_for_ssl(epochs, ssl_save_dir, session_id=raw_path.stem)
-
-    try:
-        df = extract_all_features(epochs, sfreq, per_channel=per_channel)
-    except TypeError:
-        df = extract_all_features(epochs, sfreq)
-
-    # metadata + QC
-    df["session_id"] = raw_path.stem
-    df["sfreq"] = sfreq
-    df["n_channels"] = len(raw.ch_names)
-    df["channel_names"] = repr(raw.info.get("ch_names", []))
-    total_cols = [c for c in df.columns if c.startswith("total_")]
-    if total_cols:
-        df["num_channels_with_zero_total"] = df[total_cols].apply(
-            lambda r: int((r == 0).sum()), axis=1
-        )
-        df["has_any_zero_total"] = df["num_channels_with_zero_total"] > 0
-    else:
-        df["num_channels_with_zero_total"] = 0
-        df["has_any_zero_total"] = False
-
-    # sanitize
-    if df.isin([np.inf, -np.inf]).any().any() or df.isnull().any().any():
-        n_inf = int(df.replace([np.inf, -np.inf], np.nan).isnull().sum().sum())
-        logger.warning("Found %d inf/NaN values; filling with 0.0", n_inf)
-        df = df.fillna(0.0)
-
+    fif_path = Path(fif_path)
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    parq_path = out_dir / f"{raw_path.stem}_features.parquet"
-    df.to_parquet(parq_path, index=False)
-    logger.info("Saved %s", parq_path)
 
-    manifest = {"session": raw_path.stem, "n_rows": int(df.shape[0]), "columns": []}
-    for c in df.columns:
-        manifest["columns"].append({"name": c, "dtype": str(df[c].dtype)})
-    manifest_path = out_dir / f"{raw_path.stem}_feature_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-    logger.info("Saved manifest %s", manifest_path)
+    log.info("Processing %s", fif_path)
+    try:
+        raw = mne.io.read_raw_fif(str(fif_path), verbose=False)
 
-    # optional sidecars
-    if save_spectrograms or save_connectivity:
-        sidecar_dir = out_dir / f"{raw_path.stem}_sidecars"
-        sidecar_dir.mkdir(parents=True, exist_ok=True)
-        bands = (
-            [rng for _, rng in DEFAULT_BANDS]
-            if connectivity_bands is None
-            else connectivity_bands
-        )
-        connectivity_win = connectivity_win or window
-        connectivity_step = connectivity_step or (window * (1 - overlap))
+        # Ensure TIMESTAMP channel exists (synthesize if missing for tests)
+        _synthesize_timestamp_channel_if_missing(raw)
 
-        for i in range(epochs.shape[0]):
-            epoch = epochs[i]
-            prefix = sidecar_dir / f"epoch_{i:04d}"
-            if save_spectrograms:
-                try:
-                    save_epoch_spectrograms(
-                        epoch, sfreq, str(prefix) + "_spectrogram.npz"
-                    )
-                except Exception:
-                    logger.exception("Failed spectrogram for epoch %d", i)
-            if save_connectivity:
-                try:
-                    save_sliding_connectivity(
-                        epoch,
-                        sfreq,
-                        str(prefix) + "_connectivity.npz",
-                        win_sec=connectivity_win,
-                        step_sec=connectivity_step,
-                        bands=bands,
-                    )
-                except Exception:
-                    logger.exception("Failed connectivity for epoch %d", i)
+        epochs, meta = make_epochs(raw, window=window, overlap=overlap)
+        if epochs.shape[0] == 0:
+            log.warning("No epochs produced for %s (window=%s, overlap=%s)", fif_path, window, overlap)
+            return None
+
+        df = extract_features_from_epochs(epochs, epoch_meta=meta, per_channel=per_channel)
+
+        # derive session_id and write parquet
+        session_id = meta[0].get("session_id") if meta and meta[0].get("session_id") else fif_path.stem
+        out_pq = out_dir / f"{session_id}_features.parquet"
+        df.to_parquet(out_pq)
+        log.info("Wrote features %s (n_epochs=%d)", out_pq, len(df))
+        return out_pq
+    except Exception as exc:
+        log.exception("Failed to process %s: %s", fif_path, exc)
+        return None
 
 
-def main(argv: Optional[List[str]] = None) -> None:
-    parser = argparse.ArgumentParser(prog="extract_features")
-    parser.add_argument("--input", required=True, help="Directory with .fif files")
-    parser.add_argument("--out", required=True, help="Output directory")
-    parser.add_argument("--window", type=float, default=10.0)
-    parser.add_argument("--overlap", type=float, default=0.5)
-    parser.add_argument("--per-channel", action="store_true")
-    parser.add_argument("--save-spectrograms", action="store_true")
-    parser.add_argument("--save-connectivity", action="store_true")
-    parser.add_argument("--conn-win", type=float, default=None)
-    parser.add_argument("--conn-step", type=float, default=None)
-    parser.add_argument("--conn-bands", type=str, default=None)
-    args = parser.parse_args(argv)
+def _find_fif_files_in_dir(d: Path) -> List[Path]:
+    """
+    Return a sorted list of .fif files in directory d (non-recursive).
+    """
+    d = Path(d)
+    return sorted([p for p in d.glob("*.fif") if p.is_file()])
 
-    in_dir = Path(args.input)
-    out_dir = Path(args.out)
-    fif_files = sorted(in_dir.glob("*.fif"))
-    if not fif_files:
-        logger.warning("No .fif files found in %s", in_dir)
-        return
 
-    conn_bands = None
-    if args.conn_bands:
-        parts = [p.strip() for p in args.conn_bands.split(";") if p.strip()]
-        lst = []
-        for p in parts:
-            a, b = p.split("-")
-            lst.append((float(a), float(b)))
-        conn_bands = lst
-
-    for f in fif_files:
-        try:
-            process_single_fif(
-                f,
-                out_dir,
-                window=args.window,
-                overlap=args.overlap,
-                per_channel=args.per_channel,
-                save_spectrograms=args.save_spectrograms,
-                save_connectivity=args.save_connectivity,
-                connectivity_win=args.conn_win,
-                connectivity_step=args.conn_step,
-                connectivity_bands=conn_bands,
-            )
-        except Exception:
-            logger.exception("Failed processing %s", f)
+def _process_many(files: Iterable[Path], out_dir: Path, window: float, overlap: float, per_channel: bool) -> List[Path]:
+    """
+    Process multiple files and return list of successfully written parquet paths.
+    """
+    written = []
+    for f in files:
+        res = process_single_fif(f, out_dir, window=window, overlap=overlap, per_channel=per_channel)
+        if res:
+            written.append(res)
+    return written
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    parser = argparse.ArgumentParser(description="Extract epoch-level features from .fif (file or directory).")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--input", "-i", help="Input directory containing .fif files (processes all *.fif)", metavar="DIR")
+    group.add_argument("fif", nargs="?", help="Single input .fif file to process (positional)")
+
+    parser.add_argument("--out", "-o", required=True, help="Output directory for parquet files")
+    parser.add_argument("--window", type=float, default=10.0, help="Epoch window length in seconds (default: 10.0)")
+    parser.add_argument("--overlap", type=float, default=0.5, help="Epoch overlap fraction in [0,1) (default: 0.5)")
+    parser.add_argument("--per-channel", action="store_true", default=True, help="Compute per-channel features (default: True)")
+
+    args = parser.parse_args()
+
+    out_dir = Path(args.out)
+    window = float(args.window)
+    overlap = float(args.overlap)
+    per_channel = bool(args.per_channel)
+
+    if args.input:
+        d = Path(args.input)
+        if not d.exists() or not d.is_dir():
+            parser.error(f"--input path {d} does not exist or is not a directory")
+        files = _find_fif_files_in_dir(d)
+        if not files:
+            log.warning("No .fif files found in %s", d)
+        written = _process_many(files, out_dir, window=window, overlap=overlap, per_channel=per_channel)
+        log.info("Completed processing. Wrote %d parquet files.", len(written))
+    else:
+        if not args.fif:
+            parser.error("Either provide --input DIR or a single positional fif file")
+        fif_path = Path(args.fif)
+        if not fif_path.exists():
+            parser.error(f"fif file {fif_path} does not exist")
+        res = process_single_fif(fif_path, out_dir, window=window, overlap=overlap, per_channel=per_channel)
+        if res:
+            log.info("Completed processing file: %s", res)
+        else:
+            log.error("Processing failed for %s", fif_path)

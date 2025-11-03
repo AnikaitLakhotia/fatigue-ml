@@ -1,89 +1,119 @@
-"""Epoching utilities for sliding-window epochs.
+# src/eeg/preprocessing/epoching.py
+"""
+Epoching utilities that preserve absolute timestamps.
 
-Generates numpy epochs (n_epochs, n_channels, n_samples).
+Provides sliding-window epochs that read TIMESTAMP misc channel from Raw and
+return epoch arrays plus metadata including start_ts, end_ts, and center_ts
+(absolute timestamps in seconds since epoch).
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Mapping, Optional, Tuple
-import numpy as np
-from omegaconf import DictConfig, OmegaConf
-from ..utils.logger import get_logger
 
-logger = get_logger(__name__)
+from typing import Dict, List, Tuple
+
+import numpy as np
+import mne
+
+TIMESTAMP_CHANNEL = "TIMESTAMP"
 
 
 def sliding_window_epochs_from_raw(
-    raw, window_sec: float = 10.0, stride_sec: float | None = None
-) -> Tuple[np.ndarray, np.ndarray]:
+    raw: mne.io.BaseRaw,
+    window: float = 10.0,
+    overlap: float = 0.5,
+    picks_eeg: list | None = None,
+) -> Tuple[np.ndarray, List[Dict]]:
     """
-    Create sliding-window epochs from an MNE Raw object.
+    Slice an MNE Raw into overlapping sliding windows and return epoch arrays
+    together with per-epoch metadata including absolute timestamps.
 
     Args:
-        raw: MNE Raw object (preloaded).
-        window_sec: Window length in seconds.
-        stride_sec: Step length in seconds. If None, stride = window_sec (non-overlapping).
+        raw: mne.io.BaseRaw that must contain the TIMESTAMP misc channel (or be compatible).
+        window: window length in seconds.
+        overlap: fraction overlap between windows in [0, 1).
+        picks_eeg: optional list of channel indices (defaults to all EEG channels).
 
     Returns:
-        epochs: ndarray (n_epochs, n_channels, n_samples)
-        starts: ndarray of start times in seconds
+        epochs: np.ndarray shaped (n_epochs, n_channels, n_samples_per_epoch).
+        meta: list of dicts for each epoch with keys:
+            - epoch_index, start_idx, stop_idx
+            - start_ts, end_ts, center_ts (seconds since epoch)
+            - session_id, sfreq, n_channels, channel_names
     """
-    sfreq = raw.info["sfreq"]
+    if picks_eeg is None:
+        picks_eeg = mne.pick_types(raw.info, eeg=True, misc=False)  # indices of EEG channels
+
+    if TIMESTAMP_CHANNEL not in raw.ch_names:
+        raise ValueError(f"Raw is missing required TIMESTAMP channel '{TIMESTAMP_CHANNEL}'")
+
+    # index and array of timestamp channel
+    ts_idx = raw.ch_names.index(TIMESTAMP_CHANNEL)
+    ts_arr = raw.get_data(picks=[ts_idx])[0, :]
+
+    sfreq = float(raw.info["sfreq"])
     n_samples = raw.n_times
-    win_samp = int(round(window_sec * sfreq))
-    if stride_sec is None:
-        stride_sec = window_sec
-    step = int(round(stride_sec * sfreq))
-    starts = list(range(0, n_samples - win_samp + 1, step))
-    epochs = []
-    starts_sec = []
-    for s in starts:
-        e = s + win_samp
-        data, _ = raw[:, s:e]
-        epochs.append(data.copy())
-        starts_sec.append(s / sfreq)
-    logger.info(
-        "Created %d epochs (window=%.2fs, stride=%.2fs)",
-        len(epochs),
-        window_sec,
-        stride_sec,
-    )
-    return (
-        np.stack(epochs, axis=0)
-        if epochs
-        else np.empty((0, raw.info["nchan"], win_samp))
-    ), np.array(starts_sec)
+    n_channels = len(picks_eeg)
+
+    win_samps = int(round(window * sfreq))
+    step_samps = int(round(win_samps * (1.0 - overlap)))
+    if step_samps <= 0:
+        raise ValueError("overlap too large; resulting step <= 0")
+
+    epoch_list = []
+    meta_list: List[Dict] = []
+    start = 0
+    idx = 0
+
+    # Robust session_id extraction:
+    subject_info = raw.info.get("subject_info", {})
+    session_id = None
+    if isinstance(subject_info, dict):
+        # prefer 'his_id' (we set this in process_sessions); fallback to generic 'session_id'
+        session_id = subject_info.get("his_id") or subject_info.get("session_id")
+
+    # fallback: try parsing description for 'session_id=<value>'
+    if session_id is None:
+        desc = raw.info.get("description")
+        if isinstance(desc, str) and "session_id=" in desc:
+            try:
+                session_id = desc.split("session_id=")[-1].split()[0].strip()
+            except Exception:
+                session_id = None
+
+    while start + win_samps <= n_samples:
+        stop = start + win_samps
+        seg = raw.get_data(picks=picks_eeg, start=start, stop=stop)  # shape (n_channels, win_samps)
+        epoch_list.append(seg.astype(np.float32))
+        start_ts = float(ts_arr[start])
+        end_ts = float(ts_arr[stop - 1])
+        center_ts = float((start_ts + end_ts) / 2.0)
+        meta_list.append(
+            {
+                "epoch_index": idx,
+                "start_idx": int(start),
+                "stop_idx": int(stop),
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+                "center_ts": center_ts,
+                "session_id": session_id,
+                "sfreq": sfreq,
+                "n_channels": int(n_channels),
+                "channel_names": [raw.ch_names[i] for i in picks_eeg],
+            }
+        )
+        idx += 1
+        start += step_samps
+
+    if len(epoch_list) == 0:
+        # return empty consistent shape
+        return np.zeros((0, n_channels, win_samps), dtype=np.float32), meta_list
+
+    epochs = np.stack(epoch_list, axis=0)
+    return epochs, meta_list
 
 
-def make_epochs(
-    raw, cfg: Optional[Mapping] = None
-) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+def make_epochs(raw: mne.io.BaseRaw, window: float = 10.0, overlap: float = 0.5):
     """
-    High-level wrapper to generate epochs and metadata.
-
-    Args:
-        raw: MNE Raw object.
-        cfg: Optional config mapping. Expects cfg['epoch'] with keys 'length' and 'overlap'.
-
-    Returns:
-        (epochs, starts, meta) where:
-          - epochs: ndarray (n_epochs, n_channels, n_samples)
-          - starts: ndarray of start times (s)
-          - meta: list of metadata dicts for each epoch
+    Convenience wrapper for sliding_window_epochs_from_raw.
     """
-    if cfg is None:
-        cfg = {}
-    if isinstance(cfg, DictConfig):
-        cfg = OmegaConf.to_container(cfg, resolve=True)
-    ep_cfg = cfg.get("epoch", {})
-    win = float(ep_cfg.get("length", 10.0))
-    overlap = float(ep_cfg.get("overlap", 0.5))
-    stride = win * (1 - overlap)
-    epochs, starts = sliding_window_epochs_from_raw(
-        raw, window_sec=win, stride_sec=stride
-    )
-    meta = [
-        {"epoch_index": int(i), "start_time_sec": float(s), "duration_sec": win}
-        for i, s in enumerate(starts)
-    ]
-    logger.info("make_epochs: created %d epochs", len(meta))
-    return epochs, starts, meta
+    return sliding_window_epochs_from_raw(raw, window=window, overlap=overlap)

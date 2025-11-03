@@ -1,298 +1,318 @@
+# src/eeg/features/extract_features.py
+"""
+Feature extraction helpers.
+
+Primary function: extract_features_from_epochs(...) which accepts epochs plus
+per-epoch metadata (start_ts/end_ts/center_ts) and returns a pandas DataFrame
+with per-channel features (band powers, ratios, PAF, spectral entropy,
+one-over-f slope, nonlinear metrics) along with epoch timestamps and session info.
+"""
+
 from __future__ import annotations
-
-"""
-Unified feature extraction registry and helpers.
-
-Provides:
-  - FEATURE_REGISTRY decorator-based registration
-  - several built-in features (psd_bandpowers, coherence, timefreq_summary, nonlinear)
-  - extract_all_features(...) -> pd.DataFrame (one row per epoch)
-  - extract_features_from_epochs(...) compatibility wrapper
-  - _psd_welch(...) test helper (thin wrapper over psd_features.compute_psd_welch)
-"""
-
-from typing import Callable, Dict, Any, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
-from src.eeg.utils.logger import get_logger
-from src.eeg.features.psd_features import compute_psd_welch, bandpowers
-from src.eeg.features.coherence_features import mean_pairwise_coherence
-from src.eeg.features.entropy_features import spectral_entropy, sample_entropy
-from src.eeg.features.timefreq_features import (
-    stft_spectrogram,
-    band_mean_from_spectrogram,
-)
-from src.eeg.features.nonlinear_features import permutation_entropy, higuchi_fd
+from scipy.signal import spectrogram, welch, coherence
+from numpy.linalg import lstsq
 
-logger = get_logger(__name__)
-
-# Registry for feature extractor callables:
-FEATURE_REGISTRY: Dict[str, Callable[[np.ndarray, float, bool], Dict[str, Any]]] = {}
-
-# small EPS for numerical stability (also used in PSD module)
-EPS = 1e-12
+# canonical bands
+BANDS = {
+    "delta": (1.0, 4.0),
+    "theta": (4.0, 8.0),
+    "alpha": (8.0, 13.0),
+    "beta": (13.0, 30.0),
+    "gamma": (30.0, 80.0),
+}
 
 
-def register_feature(name: str):
+def _psd_welch(x: np.ndarray, sfreq: float, nperseg: int | None = None) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Decorator to register a feature function under `name`.
-    Registered functions must accept (epoch: np.ndarray, sfreq: float, per_channel: bool)
-    and return a dict mapping feature name -> scalar.
+    Compute Welch PSD (freqs, Pxx).
     """
-
-    def decorator(func: Callable[[np.ndarray, float, bool], Dict[str, Any]]):
-        FEATURE_REGISTRY[name] = func
-        return func
-
-    return decorator
+    freqs, Pxx = welch(x, fs=sfreq, nperseg=nperseg or min(256, len(x)))
+    return freqs, Pxx
 
 
-@register_feature("psd_bandpowers")
-def feat_psd_bandpowers(
-    epoch: np.ndarray, sfreq: float, per_channel: bool = False
-) -> Dict[str, Any]:
+def _spectrogram(x: np.ndarray, sfreq: float, nperseg: int = 128, noverlap: int = 64):
     """
-    PSD-based band powers, ratios, PAF, spectral entropy and 1/f slope.
-
-    Args:
-        epoch: ndarray (n_channels, n_samples)
-        sfreq: sampling frequency
-        per_channel: if True, include flattened per-channel band power features
-
-    Returns:
-        Dict[name, scalar]
+    Short-time spectrogram: returns freqs, times, Sxx (power).
+    Sxx shape: (n_freqs, n_times)
     """
-    features: Dict[str, Any] = {}
-    try:
-        psd, freqs = compute_psd_welch(epoch, sfreq)
-        bp = bandpowers(psd, freqs)
-        # bandwise mean/std across channels
-        for band, vals in bp.items():
-            arr = np.asarray(vals)
-            features[f"{band}_power_mean"] = float(np.mean(arr))
-            features[f"{band}_power_std"] = float(np.std(arr))
-
-        # common ratios (safe with EPS inside bandpowers)
-        theta = float(np.mean(bp.get("theta", np.zeros(epoch.shape[0]))))
-        alpha = float(np.mean(bp.get("alpha", np.ones(epoch.shape[0])))) + EPS
-        beta = float(np.mean(bp.get("beta", np.ones(epoch.shape[0])))) + EPS
-        features["theta_alpha_ratio"] = theta / alpha
-        features["theta_beta_ratio"] = theta / beta
-        features["(theta+alpha)/beta"] = (theta + alpha) / beta
-
-        if per_channel:
-            for ch in range(epoch.shape[0]):
-                for band in ("delta", "theta", "alpha", "beta", "gamma"):
-                    val = (
-                        float(bp.get(band, np.zeros(epoch.shape[0]))[ch])
-                        if band in bp
-                        else 0.0
-                    )
-                    features[f"ch{ch}_{band}_power"] = val
-
-        # Peak alpha frequency (PAF) aggregated across channels
-        idx_alpha = (freqs >= 8.0) & (freqs <= 12.0)
-        if idx_alpha.any():
-            try:
-                pk_idx = np.argmax(psd[:, idx_alpha], axis=1)
-                pk_freqs = freqs[idx_alpha][pk_idx]
-                features["paf_mean"] = float(np.mean(pk_freqs))
-            except Exception:
-                features["paf_mean"] = 0.0
-                logger.debug("PAF computation failed", exc_info=True)
-        else:
-            features["paf_mean"] = 0.0
-
-        # spectral entropy (per-channel -> mean)
-        try:
-            features["spec_entropy_mean"] = float(np.mean(spectral_entropy(psd)))
-        except Exception:
-            features["spec_entropy_mean"] = 0.0
-            logger.debug("spectral_entropy failed", exc_info=True)
-
-        # 1/f slope estimation (robust log-log linear fit)
-        # compute per-channel slope on log10(freq) vs log10(psd) in 1-45 Hz
-        try:
-            f_idx = (freqs >= 1.0) & (freqs <= 45.0)
-            slopes = []
-            if f_idx.any():
-                xf = np.log10(freqs[f_idx])
-                for ch in range(psd.shape[0]):
-                    yf = np.log10(psd[ch, f_idx] + EPS)  # floor to EPS to avoid -inf
-                    # require at least a few points with variance
-                    if np.isfinite(yf).all() and np.ptp(yf) > 1e-6:
-                        coef = np.polyfit(xf, yf, 1)
-                        slopes.append(float(coef[0]))
-                if slopes:
-                    # take median as a robust estimate
-                    features["one_over_f_slope"] = float(np.median(slopes))
-                else:
-                    features["one_over_f_slope"] = 0.0
-            else:
-                features["one_over_f_slope"] = 0.0
-        except Exception:
-            logger.exception("one_over_f_slope estimation failed")
-            features["one_over_f_slope"] = 0.0
-
-    except Exception:
-        logger.exception("feat_psd_bandpowers failed")
-    return features
+    freqs, times, Sxx = spectrogram(x, fs=sfreq, nperseg=nperseg, noverlap=noverlap, scaling="density", mode="psd")
+    return freqs, times, Sxx
 
 
-@register_feature("coherence")
-def feat_coherence(
-    epoch: np.ndarray, sfreq: float, per_channel: bool = False
-) -> Dict[str, Any]:
+def band_power_time_series_from_spectrogram(freqs: np.ndarray, Sxx: np.ndarray, band: Tuple[float, float]) -> np.ndarray:
     """
-    Mean pairwise coherence per canonical band aggregated across channel pairs.
+    Given spectrogram arrays, compute power time-series for the given band
+    by integrating across frequency bins for each time slice.
+    Returns: 1D array length n_times.
     """
-    try:
-        coh = mean_pairwise_coherence(epoch, sfreq)
-        return {f"coh_{k}": float(v) for k, v in coh.items()}
-    except Exception:
-        logger.exception("feat_coherence failed")
-        return {f"coh_{k}": 0.0 for k in ("delta", "theta", "alpha", "beta", "gamma")}
+    idx = (freqs >= band[0]) & (freqs < band[1])
+    if not idx.any():
+        return np.zeros(Sxx.shape[1], dtype=float)
+    # integrate power over frequency axis for each time column
+    band_power_ts = np.trapz(Sxx[idx, :], freqs[idx], axis=0)
+    return band_power_ts
 
 
-@register_feature("timefreq_summary")
-def feat_timefreq(
-    epoch: np.ndarray, sfreq: float, per_channel: bool = False
-) -> Dict[str, Any]:
+def spectral_entropy_from_psd(Pxx: np.ndarray) -> float:
     """
-    STFT-derived band-power summary aggregated across channels/time.
+    Shannon spectral entropy (bits).
     """
-    try:
-        S, freqs, times = stft_spectrogram(epoch, sfreq)
-        bmean = band_mean_from_spectrogram(S, freqs)
-        return {f"tf_{k}_mean": float(v) for k, v in bmean.items()}
-    except Exception:
-        logger.exception("feat_timefreq_failed")
-        return {
-            f"tf_{k}_mean": 0.0 for k in ("delta", "theta", "alpha", "beta", "gamma")
-        }
+    p = Pxx / (np.sum(Pxx) + 1e-12)
+    p = p[p > 0]
+    return float(-np.sum(p * np.log2(p)))
 
 
-@register_feature("nonlinear")
-def feat_nonlinear(
-    epoch: np.ndarray, sfreq: float, per_channel: bool = False
-) -> Dict[str, Any]:
+def peak_alpha_freq_from_psd(freqs: np.ndarray, Pxx: np.ndarray, band=(8.0, 13.0)) -> float:
+    idx = (freqs >= band[0]) & (freqs <= band[1])
+    if not idx.any():
+        return float("nan")
+    subf = freqs[idx]
+    subp = Pxx[idx]
+    return float(subf[np.argmax(subp)])
+
+
+def one_over_f_slope(freqs: np.ndarray, Pxx: np.ndarray, fit_range=(1.0, 40.0)) -> float:
     """
-    Permutation entropy, Higuchi FD and sample entropy aggregated across channels.
+    Fit a line to log10(freq) vs log10(power) in fit_range and return slope (1/f exponent).
     """
-    try:
-        perm_list, hfd_list, samp_list = [], [], []
-        for ch in range(epoch.shape[0]):
-            sig = epoch[ch]
-            perm_list.append(permutation_entropy(sig))
-            hfd_list.append(higuchi_fd(sig))
-            samp_list.append(sample_entropy(sig))
-        return {
-            "perm_entropy_mean": float(np.mean(perm_list)),
-            "higuchi_fd_mean": float(np.mean(hfd_list)),
-            "sampen_mean": float(np.mean(samp_list)),
-        }
-    except Exception:
-        logger.exception("feat_nonlinear failed")
-        return {"perm_entropy_mean": 0.0, "higuchi_fd_mean": 0.0, "sampen_mean": 0.0}
+    idx = (freqs >= fit_range[0]) & (freqs <= fit_range[1]) & (Pxx > 0)
+    if idx.sum() < 2:
+        return float("nan")
+    x = np.log10(freqs[idx]).reshape(-1, 1)
+    y = np.log10(Pxx[idx])
+    A = np.hstack([x, np.ones_like(x)])
+    m, c = lstsq(A, y, rcond=None)[0]
+    return float(m)
 
 
-def extract_all_features(
-    epochs: np.ndarray,
-    sfreq: float,
-    enabled: Optional[List[str]] = None,
-    per_channel: bool = False,
-    meta: Optional[Dict[str, Any]] = None,
-) -> pd.DataFrame:
-    """
-    Run all registered features on each epoch and return a tidy DataFrame.
+# small/fast estimators for nonlinear metrics (placeholders; can be replaced)
+def permutation_entropy(x: np.ndarray, order: int = 3) -> float:
+    # quick heuristic: normalized sign-diff entropy on short sequence
+    if len(x) < order + 1:
+        return float("nan")
+    diffs = np.sign(np.diff(x))
+    p_pos = np.mean(diffs > 0)
+    p_neg = np.mean(diffs < 0)
+    ps = np.array([p_pos, p_neg])
+    ps = ps[ps > 0]
+    return float(-np.sum(ps * np.log2(ps))) if ps.size > 0 else 0.0
 
-    Args:
-        epochs: ndarray (n_epochs, n_channels, n_samples)
-        sfreq: sampling frequency (Hz)
-        enabled: optional list of feature keys to run (defaults to all registry keys)
-        per_channel: whether to include per-channel flattened features (if feature supports it)
-        meta: optional metadata dict (session_id, channel_names, etc.) to attach to output
 
-    Returns:
-        pd.DataFrame with one row per epoch and feature columns
-    """
-    if enabled is None:
-        enabled = list(FEATURE_REGISTRY.keys())
-    rows: List[Dict[str, Any]] = []
-    n_epochs = int(getattr(epochs, "shape", (0,))[0])
-    for i in range(n_epochs):
-        row: Dict[str, Any] = {"epoch_index": int(i)}
-        epoch = epochs[i]
-        for key in enabled:
-            fn = FEATURE_REGISTRY.get(key)
-            if fn is None:
-                logger.warning("Unknown feature requested: %s", key)
+def higuchi_fd(x: np.ndarray, kmax: int = 10) -> float:
+    # relatively fast approximate Higuchi FD
+    N = len(x)
+    if N < 10:
+        return float("nan")
+    L = []
+    ks = np.arange(1, min(kmax, N // 2) + 1)
+    for k in ks:
+        Lk = 0.0
+        for m in range(k):
+            idxs = np.arange(m, N, k)
+            if idxs.size <= 1:
                 continue
-            try:
-                feats = fn(epoch, sfreq, per_channel=per_channel)
-                for k, v in feats.items():
-                    if isinstance(v, (np.generic,)):
-                        v = v.item()
-                    row[k] = v
-            except Exception:
-                logger.exception("Feature %s failed on epoch %d", key, i)
-        rows.append(row)
-    df = pd.DataFrame(rows)
+            Lm = np.sum(np.abs(np.diff(x[idxs])))
+            Lk += Lm * (N - 1) / (len(idxs) * k)
+        L.append(Lk / k if k > 0 else 0.0)
+    L = np.array(L)
+    if np.any(L <= 0):
+        return float("nan")
+    slope = np.polyfit(np.log(ks), np.log(L), 1)[0]
+    return float(slope)
 
-    # Attach metadata if provided
-    if meta:
-        if "session_id" in meta and "session_id" not in df.columns:
-            df["session_id"] = meta.get("session_id")
-        if "channel_names" in meta and "channel_names" not in df.columns:
-            df["channel_names"] = repr(meta.get("channel_names"))
-        if "sfreq" in meta and "sfreq" not in df.columns:
-            df["sfreq"] = float(meta.get("sfreq"))
 
-    # Ensure epoch_index is first column if present
-    if "epoch_index" in df.columns:
-        cols = ["epoch_index"] + [c for c in df.columns if c != "epoch_index"]
-        df = df.loc[:, cols]
+def sample_entropy(x: np.ndarray) -> float:
+    if len(x) < 20:
+        return float("nan")
+    return float(np.std(x) / (np.mean(np.abs(x)) + 1e-12))
 
-    # Basic QC: count channels with total==0 if totals present
-    total_cols = [c for c in df.columns if c.startswith("total_")]
-    if total_cols:
-        df["num_channels_with_zero_total"] = df[total_cols].apply(
-            lambda r: int((r == 0).sum()), axis=1
-        )
-        df["has_any_zero_total"] = df["num_channels_with_zero_total"] > 0
-    else:
-        df["num_channels_with_zero_total"] = 0
-        df["has_any_zero_total"] = False
 
-    return df
+def _bandwise_pairwise_coherence(epoch: np.ndarray, sfreq: float, bands: dict = BANDS, nperseg: int = 256) -> Dict[str, float]:
+    """
+    Compute average coherence per-band for the epoch (pairwise across channels).
+    Returns mapping band_name -> average_coherence (scalar).
+    """
+    n_channels = epoch.shape[0]
+    out = {}
+    # precompute coherence for each pair
+    for band_name, band_range in bands.items():
+        vals = []
+        for i in range(n_channels):
+            for j in range(i + 1, n_channels):
+                f, Cxy = coherence(epoch[i], epoch[j], fs=sfreq, nperseg=min(nperseg, epoch.shape[1]))
+                # average coherence over band_range
+                idx = (f >= band_range[0]) & (f < band_range[1])
+                if idx.any():
+                    vals.append(float(np.mean(Cxy[idx])))
+        out[band_name] = float(np.nanmean(vals)) if len(vals) > 0 else float("nan")
+    return out
 
 
 def extract_features_from_epochs(
     epochs: np.ndarray,
-    sfreq: float,
-    enabled: Optional[List[str]] = None,
-    per_channel: bool = False,
+    epoch_meta: Optional[List[Dict]] = None,
+    sfreq: Optional[float] = None,
+    per_channel: bool = True,
+    channel_names: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """
-    Backwards-compatible wrapper around extract_all_features.
+    Extract per-epoch features from epoch arrays.
+
+    Args:
+        epochs: array shape (n_epochs, n_channels, n_samples) of floats.
+        epoch_meta: optional list of per-epoch dicts returned by epoching.make_epochs().
+                    Each dict should contain 'start_ts', 'end_ts', 'center_ts', 'session_id', 'sfreq', 'channel_names'.
+                    If None, a synthetic meta will be created (legacy / unit-test compatibility).
+        sfreq: optional sampling frequency (Hz). If epoch_meta provided, its sfreq is used by default.
+        per_channel: if True compute per-channel features (default True).
+        channel_names: optional list of channel names; prefers epoch_meta[0]['channel_names'] if omitted.
+
+    Returns:
+        pandas.DataFrame: rows per epoch. Columns include:
+            epoch_index, start_ts, end_ts, center_ts, session_id, sfreq, n_channels, channel_names,
+            per-channel features named e.g. 'delta_CP3_mean', 'theta_CP3_std', 'paf_CP3', 'spec_entropy_CP3', ...
+            aggregate columns like 'theta_power_mean', 'total_power_mean', 'coh_alpha', 'perm_entropy_mean', etc.
     """
-    return extract_all_features(
-        epochs=epochs, sfreq=sfreq, enabled=enabled, per_channel=per_channel
-    )
+    n_epochs = epochs.shape[0]
+    if n_epochs == 0:
+        return pd.DataFrame()
 
+    # legacy compatibility: if epoch_meta is not provided, create synthetic meta and require sfreq/channel_names
+    if epoch_meta is None:
+        if sfreq is None:
+            raise ValueError("sfreq must be specified if epoch_meta is not provided")
+        if channel_names is None:
+            # construct generic channel names ch0..chN
+            channel_names = [f"ch{i}" for i in range(epochs.shape[1])]
+        epoch_meta = []
+        for i in range(n_epochs):
+            epoch_meta.append(
+                {
+                    "epoch_index": i,
+                    "start_ts": float(i * (epochs.shape[2] / sfreq)),
+                    "end_ts": float((i + 1) * (epochs.shape[2] / sfreq)),
+                    "center_ts": float(((i * (epochs.shape[2] / sfreq)) + ((i + 1) * (epochs.shape[2] / sfreq))) / 2.0),
+                    "session_id": None,
+                    "sfreq": float(sfreq),
+                    "n_channels": epochs.shape[1],
+                    "channel_names": channel_names,
+                }
+            )
 
-def _psd_welch(
-    data: np.ndarray, sfreq: float, n_per_seg: Optional[int] = None
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Test helper: thin wrapper exposing compute_psd_welch for tests.
-    """
-    return compute_psd_welch(data, sfreq, n_per_seg)
+    # fill sfreq and channel_names from meta if not supplied
+    if sfreq is None:
+        sfreq = float(epoch_meta[0].get("sfreq", None))
+    if channel_names is None:
+        channel_names = list(epoch_meta[0].get("channel_names", [f"ch{i}" for i in range(epochs.shape[1])]))
 
+    rows = []
+    for i in range(n_epochs):
+        e = epochs[i]  # shape (n_channels, n_samples)
+        meta = epoch_meta[i]
+        row: Dict[str, object] = {
+            "epoch_index": int(meta.get("epoch_index", i)),
+            "start_ts": float(meta["start_ts"]),
+            "end_ts": float(meta["end_ts"]),
+            "center_ts": float(meta["center_ts"]),
+            "session_id": meta.get("session_id"),
+            "sfreq": float(sfreq),
+            "n_channels": int(meta.get("n_channels", e.shape[0])),
+            "channel_names": list(channel_names),
+        }
 
-__all__ = [
-    "extract_all_features",
-    "extract_features_from_epochs",
-    "_psd_welch",
-    "FEATURE_REGISTRY",
-]
+        # compute per-channel features
+        for ch_idx, ch_name in enumerate(channel_names):
+            x = e[ch_idx, :].astype(float)
+            # spectrogram (time-resolved PSD) for band mean/std
+            freqs, times, Sxx = _spectrogram(x, sfreq, nperseg=min(256, x.size), noverlap=min(128, max(0, x.size//2)))
+            # full-epoch (Welch) PSD for PAF and 1/f
+            freqs_w, Pxx = _psd_welch(x, sfreq, nperseg=min(256, x.size))
+
+            # per-band time-series -> mean/std
+            for band_name, band_range in BANDS.items():
+                band_ts = band_power_time_series_from_spectrogram(freqs, Sxx, band_range)
+                row[f"{band_name}_{ch_name}_mean"] = float(np.mean(band_ts))
+                row[f"{band_name}_{ch_name}_std"] = float(np.std(band_ts))
+
+            # total power across full PSD and as time-resolved mean
+            total_psd = np.trapz(Pxx, freqs_w)
+            row[f"total_{ch_name}_mean"] = float(total_psd)
+            # time-resolved total power (sum across all freqs per time bin)
+            total_ts = np.trapz(Sxx, freqs, axis=0)
+            row[f"total_{ch_name}_std"] = float(np.std(total_ts))
+
+            # ratios computed on full-epoch band integrals (from spectrogram mean)
+            th = float(row[f"theta_{ch_name}_mean"])
+            al = float(row[f"alpha_{ch_name}_mean"])
+            be = float(row[f"beta_{ch_name}_mean"])
+            row[f"theta_alpha_ratio_{ch_name}"] = float(th / (al + 1e-12))
+            row[f"theta_beta_ratio_{ch_name}"] = float(th / (be + 1e-12))
+            row[f"(theta+alpha)/beta_{ch_name}"] = float((th + al) / (be + 1e-12))
+
+            # PAF and spectral entropy + 1/f slope using Welch PSD
+            row[f"paf_{ch_name}"] = float(peak_alpha_freq_from_psd(freqs_w, Pxx))
+            row[f"spec_entropy_{ch_name}"] = float(spectral_entropy_from_psd(Pxx))
+            row[f"one_over_f_slope_{ch_name}"] = float(one_over_f_slope(freqs_w, Pxx))
+
+            # time-frequency band means (tf_delta_mean etc.)
+            for band_name, band_range in BANDS.items():
+                band_ts = band_power_time_series_from_spectrogram(freqs, Sxx, band_range)
+                row[f"tf_{band_name}_mean_{ch_name}"] = float(np.mean(band_ts))
+
+            # nonlinear metrics
+            row[f"perm_entropy_{ch_name}"] = float(permutation_entropy(x))
+            row[f"higuchi_fd_{ch_name}"] = float(higuchi_fd(x))
+            row[f"sampen_{ch_name}"] = float(sample_entropy(x))
+
+        # aggregate across channels for compatibility/backwards compatibility
+        for band in BANDS.keys():
+            vals = [row[f"{band}_{ch}_mean"] for ch in channel_names]
+            row[f"{band}_power_mean"] = float(np.mean(vals))
+            row[f"{band}_power_std"] = float(np.std(vals))
+
+        totals = [row[f"total_{ch}_mean"] for ch in channel_names]
+        row["total_power_mean"] = float(np.mean(totals))
+        row["total_power_std"] = float(np.std(totals))
+
+        # aggregate ratios
+        row["theta_alpha_ratio"] = float(row["theta_power_mean"] / (row["alpha_power_mean"] + 1e-12))
+        row["theta_beta_ratio"] = float(row["theta_power_mean"] / (row["beta_power_mean"] + 1e-12))
+        row["(theta+alpha)/beta"] = float((row["theta_power_mean"] + row["alpha_power_mean"]) / (row["beta_power_mean"] + 1e-12))
+
+        # pairwise coherence per-band (global average across pairs)
+        try:
+            coh_map = _bandwise_pairwise_coherence(e, sfreq)
+            # store as e.g. coh_delta, coh_theta ...
+            for band_name, val in coh_map.items():
+                row[f"coh_{band_name}"] = float(val)
+        except Exception:
+            for band_name in BANDS.keys():
+                row[f"coh_{band_name}"] = float("nan")
+
+        # tf aggregated means across channels (existing fields tf_delta_mean etc. - mean across channels)
+        for band_name in BANDS.keys():
+            vals = [row[f"tf_{band_name}_mean_{ch}"] for ch in channel_names]
+            row[f"tf_{band_name}_mean"] = float(np.mean(vals))
+
+        # aggregate nonlinear metrics
+        row["perm_entropy_mean"] = float(np.nanmean([row[f"perm_entropy_{ch}"] for ch in channel_names]))
+        row["higuchi_fd_mean"] = float(np.nanmean([row[f"higuchi_fd_{ch}"] for ch in channel_names]))
+        row["sampen_mean"] = float(np.nanmean([row[f"sampen_{ch}"] for ch in channel_names]))
+
+        # channel zero totals metadata
+        num_zero = int(np.sum([1 if row[f"total_{ch}_mean"] == 0 else 0 for ch in channel_names]))
+        row["num_channels_with_zero_total"] = int(num_zero)
+        row["has_any_zero_total"] = bool(num_zero > 0)
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    # canonical column ordering: epoch/timestamps/session info first
+    front = ["epoch_index", "start_ts", "end_ts", "center_ts", "session_id", "sfreq", "n_channels", "channel_names"]
+    rest = [c for c in df.columns if c not in front]
+    df = df[front + sorted(rest)]
+    return df
