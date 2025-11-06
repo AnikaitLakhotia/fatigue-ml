@@ -3,9 +3,9 @@
 Convert combined CSV (per-sample rows with absolute timestamps) into per-session
 MNE Raw .fif files that include a TIMESTAMP misc channel.
 
-- Keeps original timestamps from the CSV (converted to seconds since epoch).
-- Stores the session identifier safely in raw.info['subject_info']['his_id'] (MNE-validated).
-- Writes a small JSON sidecar with basic metadata.
+Keeps original timestamps from the CSV (converted to seconds since epoch).
+Stores the session identifier safely in raw.info['subject_info']['his_id'] (MNE-validated).
+Writes a small JSON sidecar with basic metadata.
 """
 
 from __future__ import annotations
@@ -13,114 +13,241 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, List, Optional
 
 import numpy as np
 import pandas as pd
 import mne
 
-log = logging.getLogger(__name__)
-
-ELECTRODE_NAMES = ["CP3", "C3", "F5", "PO3", "PO4", "F6", "C4", "CP4"]
-TIMESTAMP_CHANNEL = "TIMESTAMP"
+logger = logging.getLogger(__name__)
 
 
-def _ensure_numeric_timestamps(ts_series: Sequence) -> np.ndarray:
+def _infer_sfreq_from_timestamps(ts: pd.Series) -> Optional[float]:
     """
-    Convert a sequence of timestamps into seconds since epoch (float numpy array).
+    Infer sampling frequency (Hz) from a pandas Series of timestamps (datetime-like or numeric seconds).
+    Returns None on failure.
+    """
+    try:
+        if ts.size < 2:
+            return None
+
+        if np.issubdtype(ts.dtype, np.datetime64) or ts.dtype == object:
+            ts_dt = pd.to_datetime(ts, errors="coerce")
+            if not ts_dt.isna().any():
+                secs = (ts_dt.view("int64") / 1e9).astype(float)
+                diffs = np.diff(secs)
+                med = float(np.median(diffs[np.nonzero(diffs)])) if np.any(diffs != 0) else None
+            else:
+                numeric = pd.to_numeric(ts, errors="coerce").astype(float)
+                numeric = numeric[~np.isnan(numeric)]
+                if numeric.size < 2:
+                    return None
+                diffs = np.diff(numeric)
+                med = float(np.median(diffs[np.nonzero(diffs)])) if np.any(diffs != 0) else None
+        else:
+            numeric = pd.to_numeric(ts, errors="coerce").astype(float)
+            numeric = numeric[~np.isnan(numeric)]
+            if numeric.size < 2:
+                return None
+            if np.median(np.abs(numeric)) > 1e6:
+                numeric = numeric / 1000.0
+            diffs = np.diff(numeric)
+            med = float(np.median(diffs[np.nonzero(diffs)])) if np.any(diffs != 0) else None
+    except Exception:
+        return None
+
+    if med is None or med <= 0:
+        return None
+    return 1.0 / med
+
+
+def write_session_fif(
+    df_session: pd.DataFrame,
+    out_dir: Path,
+    session_id: str,
+    ch_names: Optional[List[str]] = None,
+    resample: bool = True,
+    resample_sfreq: int = 128,
+    dtype: str = "float32",
+    overwrite: bool = True,
+) -> Path:
+    """
+    Write a per-session .fif file.
 
     Args:
-        ts_series: column-like sequence (ints/floats/strings) from CSV.
+        df_session : pd.DataFrame
+            Frame with channel columns and optionally 'timestamp'.
+        out_dir : Path
+        session_id : str
+        ch_names : Optional[List[str]]  # if None use all non-reserved columns
+        resample : bool
+        resample_sfreq : int
+        dtype : 'float32' | 'float64'
+        overwrite : bool
 
     Returns:
-        1D numpy array of timestamps in seconds.
-
-    Raises:
-        ValueError: if non-numeric values are present.
+        Path to written .fif
     """
-    arr = pd.to_numeric(ts_series, errors="coerce").to_numpy()
-    if np.isnan(arr).any():
-        raise ValueError("Timestamps contain non-numeric values")
-    # Convert milliseconds -> seconds if median is very large.
-    if np.median(arr) > 1e12:
-        arr = arr / 1000.0
-    return arr.astype(float)
-
-
-def process_sessions(input_csv: str | Path, out_dir: str | Path) -> None:
-    """
-    Read the combined CSV and write per-session preprocessed raw .fif files.
-
-    Each output Raw contains:
-      - EEG channels in ELECTRODE_NAMES
-      - TIMESTAMP misc channel (seconds since epoch)
-      - raw.info['subject_info']['his_id'] = session_id
-
-    Args:
-        input_csv: path to combined CSV; must contain columns for electrodes,
-                   a 'timestamp' column and a 'session_id' column.
-        out_dir: directory to write per-session .fif and JSON sidecar files.
-
-    Returns:
-        None
-    """
-    input_csv = Path(input_csv)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Let pandas detect delim automatically (commas, tabs, etc.)
-    df = pd.read_csv(input_csv, sep=None, engine="python")
+    reserved = {"timestamp", "session_id"}
+    if ch_names is None:
+        ch_list = [c for c in df_session.columns if c not in reserved]
+    else:
+        ch_list = [c for c in ch_names if c in df_session.columns]
+    if not ch_list:
+        raise ValueError("No channel columns found in session dataframe")
+
+    # build data array (n_ch, n_samples)
+    data = df_session.loc[:, ch_list].to_numpy(dtype=float).T  # (n_ch, n_samples)
+    n_ch, n_samples = data.shape
+
+    # infer sampling rate from timestamp if available
+    sfreq = None
+    ts_seconds = None
+    if "timestamp" in df_session.columns:
+        ts_col = df_session["timestamp"]
+        try:
+            ts_seconds_candidate = None
+            if np.issubdtype(ts_col.dtype, np.datetime64) or ts_col.dtype == object:
+                ts_dt = pd.to_datetime(ts_col, errors="coerce")
+                if not ts_dt.isna().any():
+                    ts_seconds_candidate = (ts_dt - ts_dt.iloc[0]).view("int64") / 1e9
+                else:
+                    numeric = pd.to_numeric(ts_col, errors="coerce").astype(float)
+                    if not numeric.isna().any():
+                        ts_seconds_candidate = numeric
+            else:
+                numeric = pd.to_numeric(ts_col, errors="coerce").astype(float)
+                if not numeric.isna().any():
+                    ts_seconds_candidate = numeric
+            if ts_seconds_candidate is not None:
+                ts_seconds = np.asarray(ts_seconds_candidate, dtype=float)
+                if np.median(np.abs(ts_seconds)) > 1e6:
+                    ts_seconds = ts_seconds / 1000.0
+                ts_seconds = ts_seconds - float(ts_seconds[0])
+                sfreq = _infer_sfreq_from_timestamps(pd.Series(ts_seconds))
+        except Exception:
+            sfreq = None
+            ts_seconds = None
+
+    if sfreq is None or not np.isfinite(sfreq) or sfreq <= 0:
+        sfreq = 256.0
+
+    if ts_seconds is None:
+        ts_seconds = np.arange(n_samples, dtype=float) / float(sfreq)
+
+    # append TIMESTAMP channel
+    ts_channel = ts_seconds.reshape(1, -1)
+    data_with_ts = np.vstack([data, ts_channel])
+    final_ch_names = list(ch_list) + ["TIMESTAMP"]
+    ch_types = ["eeg"] * len(ch_list) + ["misc"]
+
+    info = mne.create_info(final_ch_names, sfreq, ch_types=ch_types)
+    raw = mne.io.RawArray(data_with_ts.astype(np.float64), info)
+
+    # store session id in subject_info 'his_id' so downstream tools may recover it
+    raw.info["subject_info"] = {"his_id": str(session_id)}
+    # store description fallback
+    raw.info["description"] = f"Converted from combined CSV; session_id={session_id}"
+
+    # resample if beneficial
+    if resample and sfreq > resample_sfreq:
+        try:
+            raw.resample(resample_sfreq, npad="auto")
+            sfreq = resample_sfreq
+        except Exception as exc:
+            logger.warning("Resample failed for session %s: %s", session_id, exc)
+
+    # cast internal buffer to desired dtype (float32 recommended)
+    if dtype == "float32":
+        raw._data = raw._data.astype(np.float32)
+
+    out_path = out_dir / f"{session_id}_preprocessed_raw.fif"
+    if out_path.exists() and not overwrite:
+        logger.info("Skipping existing %s", out_path)
+        return out_path
+
+    raw.save(out_path, overwrite=overwrite)
+
+    # write a small JSON sidecar for easy consumption
+    meta = {"session_id": str(session_id), "sfreq": float(sfreq), "n_channels": len(ch_list)}
+    (out_dir / f"{session_id}_preprocessed_meta.json").write_text(json.dumps(meta))
+
+    logger.info("Wrote %s (sfreq=%.3f Hz, n_samples=%d, channels=%s)", out_path, sfreq, raw.n_times, final_ch_names)
+    return out_path
+
+
+def process_sessions(
+    csv_path: Path,
+    out_dir: Path,
+    *,
+    ch_names: Optional[Iterable[str]] = None,
+    resample: bool = True,
+    resample_sfreq: int = 128,
+    dtype: str = "float32",
+    overwrite: bool = True,
+) -> None:
+    """Read combined CSV and write a .fif per unique session_id."""
+    csv_path = Path(csv_path)
+    out_dir = Path(out_dir)
+    if not csv_path.exists():
+        raise FileNotFoundError(csv_path)
+
+    df = pd.read_csv(csv_path)
     if "session_id" not in df.columns:
         raise ValueError("Input CSV must contain a 'session_id' column.")
-    if "timestamp" not in df.columns:
-        raise ValueError("Input CSV must contain a 'timestamp' column.")
 
-    for session_id, g in df.groupby("session_id"):
-        g = g.reset_index(drop=True)
-        missing = [c for c in ELECTRODE_NAMES if c not in g.columns]
-        if missing:
-            raise ValueError(f"Missing expected channels for session {session_id}: {missing}")
+    ch_list = list(ch_names) if ch_names else None
 
-        # Build data array: (n_channels, n_samples)
-        data = np.vstack([g[name].to_numpy(dtype=float) for name in ELECTRODE_NAMES])
-        ts_abs = _ensure_numeric_timestamps(g["timestamp"])
-        if len(ts_abs) < 2:
-            raise ValueError(f"Session {session_id} has fewer than 2 timestamped samples")
+    for session_id, grp in df.groupby("session_id"):
+        logger.info("Processing session: %s (rows=%d)", session_id, len(grp))
+        write_session_fif(
+            grp.reset_index(drop=True),
+            out_dir,
+            session_id=str(session_id),
+            ch_names=ch_list,
+            resample=resample,
+            resample_sfreq=resample_sfreq,
+            dtype=dtype,
+            overwrite=overwrite,
+        )
 
-        # Robust sampling frequency estimation (median dt)
-        dt = float(np.median(np.diff(ts_abs)))
-        if dt <= 0:
-            raise ValueError(f"Non-increasing timestamps in session {session_id}")
-        sfreq = float(round(1.0 / dt, 6))
 
-        # TIMESTAMP channel (1 x n_samples)
-        timestamp_row = ts_abs.reshape(1, -1).astype(float)
-        raw_data = np.vstack([data, timestamp_row])
+def _build_parser() -> "argparse.ArgumentParser":
+    import argparse
 
-        ch_names = list(ELECTRODE_NAMES) + [TIMESTAMP_CHANNEL]
-        ch_types = ["eeg"] * len(ELECTRODE_NAMES) + ["misc"]
+    p = argparse.ArgumentParser(description="Convert combined CSV -> per-session .fif files.")
+    p.add_argument("--input", "-i", required=True, help="Input combined CSV")
+    p.add_argument("--out", "-o", required=True, help="Output directory for .fif files")
+    p.add_argument("--channels", "-c", default=None, help="Comma-separated channel list (optional)")
+    p.add_argument("--no-resample", action="store_true", help="Do not resample (preserve original sfreq)")
+    p.add_argument("--resample-sfreq", default=128, type=int, help="Target sfreq when resampling (Hz)")
+    p.add_argument("--dtype", default="float32", choices=("float32", "float64"), help="Numeric dtype for saved FIF")
+    p.add_argument("--no-overwrite", action="store_true", help="Do not overwrite existing files")
+    p.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    return p
 
-        info = mne.create_info(ch_names, sfreq=sfreq, ch_types=ch_types)
-        raw = mne.io.RawArray(raw_data, info, verbose=False)
 
-        # Store session id in a validated SubjectInfo field 'his_id'
-        raw.info["subject_info"] = {"his_id": str(session_id)}
-        # Store description as a readable fallback containing the session id
-        raw.info["description"] = f"Converted from combined CSV; TIMESTAMP channel preserved; session_id={session_id}"
+def main():
+    args = _build_parser().parse_args()
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-        out_fif = out_dir / f"{session_id}_preprocessed_raw.fif"
-        raw.save(out_fif, overwrite=True)
+    ch_names = None
+    if args.channels:
+        ch_names = [c.strip() for c in args.channels.split(",")]
 
-        meta = {"session_id": session_id, "sfreq": sfreq, "n_channels": len(ELECTRODE_NAMES)}
-        (out_dir / f"{session_id}_preprocessed_meta.json").write_text(json.dumps(meta))
-        log.info("Wrote %s  (sfreq=%.3f Hz, n_samples=%d)", out_fif, sfreq, raw.n_times)
+    process_sessions(
+        Path(args.input),
+        Path(args.out),
+        ch_names=ch_names,
+        resample=not args.no_resample,
+        resample_sfreq=args.resample_sfreq,
+        dtype=args.dtype,
+        overwrite=not args.no_overwrite,
+    )
 
 
 if __name__ == "__main__":
-    import argparse
-    logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser(description="Convert combined CSV to per-session .fif (includes TIMESTAMP channel).")
-    parser.add_argument("--input", "-i", required=True, help="Path to combined CSV")
-    parser.add_argument("--out", "-o", required=True, help="Output directory for per-session .fif files")
-    args = parser.parse_args()
-    process_sessions(args.input, args.out)
+    main()

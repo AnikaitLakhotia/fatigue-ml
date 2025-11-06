@@ -9,7 +9,9 @@ one-over-f slope, nonlinear metrics) along with epoch timestamps and session inf
 """
 
 from __future__ import annotations
+
 from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 from scipy.signal import spectrogram, welch, coherence
@@ -227,7 +229,7 @@ def extract_features_from_epochs(
         for ch_idx, ch_name in enumerate(channel_names):
             x = e[ch_idx, :].astype(float)
             # spectrogram (time-resolved PSD) for band mean/std
-            freqs, times, Sxx = _spectrogram(x, sfreq, nperseg=min(256, x.size), noverlap=min(128, max(0, x.size//2)))
+            freqs, times, Sxx = _spectrogram(x, sfreq, nperseg=min(256, x.size), noverlap=min(128, max(0, x.size // 2)))
             # full-epoch (Welch) PSD for PAF and 1/f
             freqs_w, Pxx = _psd_welch(x, sfreq, nperseg=min(256, x.size))
 
@@ -277,7 +279,7 @@ def extract_features_from_epochs(
         row["total_power_mean"] = float(np.mean(totals))
         row["total_power_std"] = float(np.std(totals))
 
-        # aggregate ratios
+        # ratios
         row["theta_alpha_ratio"] = float(row["theta_power_mean"] / (row["alpha_power_mean"] + 1e-12))
         row["theta_beta_ratio"] = float(row["theta_power_mean"] / (row["beta_power_mean"] + 1e-12))
         row["(theta+alpha)/beta"] = float((row["theta_power_mean"] + row["alpha_power_mean"]) / (row["beta_power_mean"] + 1e-12))
@@ -307,6 +309,7 @@ def extract_features_from_epochs(
         row["num_channels_with_zero_total"] = int(num_zero)
         row["has_any_zero_total"] = bool(num_zero > 0)
 
+        # append row
         rows.append(row)
 
     df = pd.DataFrame(rows)

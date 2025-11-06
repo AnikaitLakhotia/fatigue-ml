@@ -1,14 +1,30 @@
-# Fatigue-ML
+# Fatigue-ML - README
 
-## Overview
+EEG fatigue analysis pipeline for reproducible research and deployment.
 
-This repository provides a reproducible EEG-based fatigue analysis pipeline, covering ingestion, preprocessing, epoching, feature extraction, and unsupervised modeling (classical clustering or autoencoder embeddings).
+This is a system for EEG preprocessing, per-session feature extraction, SSL
+embedding generation, and unsupervised modeling.
 
-⚠️ **Data policy:** Raw EEG data, `.fif` files, Parquet features, or model weights **must not** be committed to Git.
+---
 
-### Highlights
-- **Robust preprocessing:** bandpass + notch filtering, re-referencing, ICA artifact removal  
-- **Session-level reproducibility:** `.fif` intermediate files saved per session  
+## TL;DR
+
+- A focused pipeline that converts a combined CSV into per-session `.fif`
+  files, extracts per-epoch features (band powers, spectrograms, connectivity),
+  and creates session-level embeddings for downstream modeling.
+- Built for scalability: batched FFTs, optional GPU (PyTorch), file-level
+  parallelism, dtype/resampling optimizations, and clear CLI entrypoints.
+- Key entrypoints:
+  - `python -m src.eeg.scripts.process_sessions` - CSV → per-session `.fif`
+  - `python -m src.eeg.scripts.extract_features` - `.fif` → features parquet
+  - `python -m src.eeg.models.cli embeddings` - features → session embeddings
+
+---
+
+## Key Capabilities
+
+- **Robust preprocessing:** bandpass + notch filtering, re-referencing, ICA artifact removal.
+- **Session-level reproducibility:** `.fif` intermediate files saved per session.
 - **Feature extraction:**
   - PSD (Welch), absolute & relative band powers (δ/θ/α/β/γ)
   - Peak Alpha Frequency (PAF)
@@ -24,7 +40,7 @@ This repository provides a reproducible EEG-based fatigue analysis pipeline, cov
 
 ---
 
-## Repository Structure
+## Directory Layout
 
 ```
 fatigue-ml/
@@ -50,55 +66,134 @@ fatigue-ml/
 
 ---
 
-## Data Placement
+## Install
 
-Place your combined EEG CSV here:
-
-```
-data/raw/combined_dataset.csv
-```
-
-Expected minimal columns:
-
-```
-CP3, C3, F5, PO3, PO4, F6, C4, CP4, timestamp, session_id
-```
-
----
-
-## Quickstart
-
-### 1. Install dependencies
+Use Poetry to manage dependencies. If you require GPU acceleration, install
+PyTorch with the appropriate CUDA support for your environment.
 
 ```bash
 poetry install
 ```
 
-### 2. Run preprocessing
+In CI, prefer a CPU-only matrix by default; add a separate GPU workflow if you
+have GPU runners available.
 
-Convert combined CSV → per-session `.fif`:
+---
 
-```bash
-python -m src.eeg.scripts.process_sessions --input data/raw/combined_dataset.csv --out data/interim
-```
+## Usage
 
-### 3. Extract features
-
-Per-session `.fif` → per-epoch feature Parquet (+ optional `.npz` SSL outputs):
+### 1) Preprocess CSV → session FIF
 
 ```bash
-python -m src.eeg.scripts.extract_features --input data/interim --out data/features --window 10 --overlap 0.5 --save-spectrograms --save-connectivity --save-ssl
+python3 -m src.eeg.scripts.process_sessions   --input data/raw/combined_dataset.csv   --out data/interim
 ```
 
-Each epoch row now includes:
+This produces files like `data/interim/{session_id}_preprocessed_raw.fif` and
+ensures a `TIMESTAMP` channel is present.
+
+**Options:** `--no-resample`, `--resample-sfreq`, `--dtype float32|float64`, `--channels`.
+
+### 2) Feature Extraction (parallel)
+
+CPU (NumPy) path:
+
+```bash
+python3 -m src.eeg.scripts.extract_features   many   --input data/interim   --out data/features   --backend numpy   --n-jobs 8   --connectivity-mode minimal
+```
+
+GPU (Torch) path - ensure proper GPU assignment per worker:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m src.eeg.scripts.extract_features   many   --input data/interim   --out data/features   --backend torch   --device cuda   --n-jobs 1   --connectivity-mode minimal
+```
+
+**Options:** `--window`, `--overlap`, `--nperseg`, `--noverlap`, `--dtype`, `--save-spectrograms`, `--save-connectivity`, `--save-ssl`.
+
+### 3) Create session embeddings
+
+```bash
+python -m src.eeg.models.cli embeddings   --in data/features   --out data/processed/session_embeddings.parquet
+```
+
+---
+
+## File formats & outputs
+
+- **`.fif`** - per-session preprocessed raw (MNE Raw) including `TIMESTAMP`.
+- **Parquet** - per-session per-epoch feature tables (one parquet file per
+  session by default) containing scalar features and optional spectrogram/
+  connectivity sidecars (arrays may be stored or referenced).
+- **`.npz`** - optional per-session SSL outputs (vectors or codebook tokens).
+
+Each epoch row includes (examples):
 - `timestamp_start`, `timestamp_end`, `timestamp_center`
-- Per-channel features for each electrode
+- `delta_power_mean`, `theta_power_mean`, `alpha_power_mean`, ...
+- `theta_alpha_ratio`, `one_over_f_slope`, `spec_entropy_mean`, ...
+- Optionally per-channel `alpha_ch0`, `alpha_ch1`, ...
 
-### 4. Generate session embeddings
+---
+
+## Internals
+
+- Batched Welch PSD and spectrogram computation (`src.eeg.features._fast_spectral`).
+- Two backends: `numpy` (vectorized FFTs) and `torch` (stft on CPU/GPU).
+- Connectivity computed via averaged STFT cross-spectra; `connectivity_mode`
+  controls computation budget.
+- Early dtype casting to `float32` by default to reduce memory and speed up
+  FFTs; `float64` available if exact numerical parity is required.
+
+---
+
+## Performance tuning & best practices
+
+1. Tune `--nperseg` / `--noverlap` to balance time-frequency resolution vs compute.
+2. Resample early to lower the sample rate and reduce FFT cost.
+3. Use `--connectivity-mode minimal` or `none` to avoid expensive all-pairs coherence.
+4. For GPU: prefer one process per GPU or explicit GPU assignment per worker.
+5. Use `pyarrow` parquet engine for fast IO.
+
+---
+
+## Testing & CI
+
+- Add parity tests between `numpy` and `torch` backends on small synthetic inputs.
+- Keep CI CPU-only by default; add optional GPU workflow for smoke tests.
+- Use `ruff`, `black`, and `mypy` in pre-commit hooks and CI pipelines.
+
+---
+
+## Reproducibility & observability
+
+- Pin dependency ranges and use lockfiles for CI.
+- Log versions, git SHA, and environment (python, torch, cuda) per run.
+- Emit per-file processing durations and counts to a metrics backend.
+
+---
+
+## Security & Privacy
+
+- Do not commit data. `.gitignore` excludes `data/`, `.fif`, `.parquet`, and artifacts.
+- Use encrypted object storage for raw EEG and lock down access via IAM.
+
+---
+
+## Contributing
+
+Run linters & tests locally:
 
 ```bash
-python -m src.eeg.models.cli embeddings --in data/features --out data/processed/session_embeddings.parquet
+poetry run ruff check src tests
+poetry run black --check .
+poetry run pytest -q
 ```
+
+Add tests for new helpers and ensure backend parity where applicable.
+
+---
+
+## Contact
+
+Maintainer: Anikait Lakhotia <alokhoti@uwaterloo.ca>
 
 ---
 
