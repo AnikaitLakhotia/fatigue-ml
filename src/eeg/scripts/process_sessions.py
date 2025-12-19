@@ -6,6 +6,12 @@ MNE Raw .fif files that include a TIMESTAMP misc channel.
 Keeps original timestamps from the CSV (converted to seconds since epoch).
 Stores the session identifier safely in raw.info['subject_info']['his_id'] (MNE-validated).
 Writes a small JSON sidecar with basic metadata.
+
+Improvements in this commit:
+- Avoid direct mutation of MNE private attribute `raw._data`. Use `apply_function`
+  to cast buffers safely.
+- Log and write metadata flag `sfreq_inferred` to explicitly indicate whether
+  sampling frequency was inferred from timestamps or defaulted.
 """
 
 from __future__ import annotations
@@ -75,18 +81,17 @@ def write_session_fif(
     Write a per-session .fif file.
 
     Args:
-        df_session : pd.DataFrame
-            Frame with channel columns and optionally 'timestamp'.
-        out_dir : Path
-        session_id : str
-        ch_names : Optional[List[str]]  # if None use all non-reserved columns
-        resample : bool
-        resample_sfreq : int
-        dtype : 'float32' | 'float64'
-        overwrite : bool
+        df_session: pd.DataFrame with channel columns and optionally 'timestamp'.
+        out_dir: Path where outputs will be saved.
+        session_id: Identifier for the session (used in filenames and metadata).
+        ch_names: Optional list of channel names to include (defaults to all non-reserved columns).
+        resample: Whether to resample to `resample_sfreq` when original sfreq is higher.
+        resample_sfreq: Target sampling frequency when resampling.
+        dtype: 'float32' or 'float64' for saved FIF internal buffer.
+        overwrite: If False and file exists, skip writing.
 
     Returns:
-        Path to written .fif
+        Path to the written .fif file.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +110,7 @@ def write_session_fif(
 
     # infer sampling rate from timestamp if available
     sfreq = None
+    sfreq_inferred = False
     ts_seconds = None
     if "timestamp" in df_session.columns:
         ts_col = df_session["timestamp"]
@@ -128,12 +134,22 @@ def write_session_fif(
                     ts_seconds = ts_seconds / 1000.0
                 ts_seconds = ts_seconds - float(ts_seconds[0])
                 sfreq = _infer_sfreq_from_timestamps(pd.Series(ts_seconds))
+                if sfreq is not None:
+                    sfreq_inferred = True
         except Exception:
             sfreq = None
             ts_seconds = None
 
     if sfreq is None or not np.isfinite(sfreq) or sfreq <= 0:
+        # Default fallback - explicit warning and metadata flag to indicate inference failed
         sfreq = 256.0
+        sfreq_inferred = False
+        logger.warning(
+            "Could not infer sampling frequency for session %s; defaulting to %.1f Hz. "
+            "Please check timestamps for this session.",
+            session_id,
+            float(sfreq),
+        )
 
     if ts_seconds is None:
         ts_seconds = np.arange(n_samples, dtype=float) / float(sfreq)
@@ -145,6 +161,7 @@ def write_session_fif(
     ch_types = ["eeg"] * len(ch_list) + ["misc"]
 
     info = mne.create_info(final_ch_names, sfreq, ch_types=ch_types)
+    # Create RawArray with float64 (MNE expects float) then safely cast below
     raw = mne.io.RawArray(data_with_ts.astype(np.float64), info)
 
     # store session id in subject_info 'his_id' so downstream tools may recover it
@@ -160,9 +177,16 @@ def write_session_fif(
         except Exception as exc:
             logger.warning("Resample failed for session %s: %s", session_id, exc)
 
-    # cast internal buffer to desired dtype (float32 recommended)
-    if dtype == "float32":
-        raw._data = raw._data.astype(np.float32)
+    # Cast internal buffer to desired dtype using MNE public API (avoid private _data mutation).
+    try:
+        # apply_function will apply per-channel transformations in-place
+        if dtype == "float32":
+            # ensure underlying data is cast to float32 safely
+            raw.apply_function(lambda arr: arr.astype(np.float32), picks="all")
+        else:
+            raw.apply_function(lambda arr: arr.astype(np.float64), picks="all")
+    except Exception:
+        logger.exception("Failed to cast raw data dtype using apply_function; proceeding with current dtype")
 
     out_path = out_dir / f"{session_id}_preprocessed_raw.fif"
     if out_path.exists() and not overwrite:
@@ -172,10 +196,22 @@ def write_session_fif(
     raw.save(out_path, overwrite=overwrite)
 
     # write a small JSON sidecar for easy consumption
-    meta = {"session_id": str(session_id), "sfreq": float(sfreq), "n_channels": len(ch_list)}
+    meta = {
+        "session_id": str(session_id),
+        "sfreq": float(sfreq),
+        "sfreq_inferred": bool(sfreq_inferred),
+        "n_channels": len(ch_list),
+    }
     (out_dir / f"{session_id}_preprocessed_meta.json").write_text(json.dumps(meta))
 
-    logger.info("Wrote %s (sfreq=%.3f Hz, n_samples=%d, channels=%s)", out_path, sfreq, raw.n_times, final_ch_names)
+    logger.info(
+        "Wrote %s (sfreq=%.3f Hz, n_samples=%d, channels=%s, sfreq_inferred=%s)",
+        out_path,
+        sfreq,
+        raw.n_times,
+        final_ch_names,
+        sfreq_inferred,
+    )
     return out_path
 
 
@@ -189,7 +225,20 @@ def process_sessions(
     dtype: str = "float32",
     overwrite: bool = True,
 ) -> None:
-    """Read combined CSV and write a .fif per unique session_id."""
+    """Read combined CSV and write a .fif per unique session_id.
+
+    Args:
+        csv_path: Path to the combined CSV.
+        out_dir: Directory to write per-session FIFs.
+        ch_names: Optional iterable of channel names to select.
+        resample: Whether to resample sessions.
+        resample_sfreq: Target sampling rate if resampling.
+        dtype: Float dtype to save internal buffers as.
+        overwrite: Whether to overwrite existing outputs.
+
+    Returns:
+        None
+    """
     csv_path = Path(csv_path)
     out_dir = Path(out_dir)
     if not csv_path.exists():
