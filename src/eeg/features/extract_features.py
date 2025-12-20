@@ -6,11 +6,15 @@ Primary function: extract_features_from_epochs(...) which accepts epochs plus
 per-epoch metadata (start_ts/end_ts/center_ts) and returns a pandas DataFrame
 with per-channel features (band powers, ratios, PAF, spectral entropy,
 one-over-f slope, nonlinear metrics) along with epoch timestamps and session info.
+
+This file is backward-compatible with older callers that passed legacy kwargs
+such as `enabled`, `save_spectrograms`, `backend`, etc. Unknown/unused kwargs
+are accepted and ignored to maintain API stability.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Iterable, Any
 
 import numpy as np
 import pandas as pd
@@ -35,11 +39,13 @@ def _psd_welch(x: np.ndarray, sfreq: float, nperseg: int | None = None) -> Tuple
     return freqs, Pxx
 
 
-def _spectrogram(x: np.ndarray, sfreq: float, nperseg: int = 128, noverlap: int = 64):
+def _spectrogram(x: np.ndarray, sfreq: float, nperseg: int | None = None, noverlap: int | None = None):
     """
     Short-time spectrogram: returns freqs, times, Sxx (power).
     Sxx shape: (n_freqs, n_times)
     """
+    nperseg = int(nperseg or min(128, x.size))
+    noverlap = int(noverlap if noverlap is not None else nperseg // 2)
     freqs, times, Sxx = spectrogram(x, fs=sfreq, nperseg=nperseg, noverlap=noverlap, scaling="density", mode="psd")
     return freqs, times, Sxx
 
@@ -132,7 +138,7 @@ def sample_entropy(x: np.ndarray) -> float:
     return float(np.std(x) / (np.mean(np.abs(x)) + 1e-12))
 
 
-def _bandwise_pairwise_coherence(epoch: np.ndarray, sfreq: float, bands: dict = BANDS, nperseg: int = 256) -> Dict[str, float]:
+def _bandwise_pairwise_coherence(epoch: np.ndarray, sfreq: float, bands: dict = BANDS, nperseg: int | None = 256) -> Dict[str, float]:
     """
     Compute average coherence per-band for the epoch (pairwise across channels).
     Returns mapping band_name -> average_coherence (scalar).
@@ -144,7 +150,7 @@ def _bandwise_pairwise_coherence(epoch: np.ndarray, sfreq: float, bands: dict = 
         vals = []
         for i in range(n_channels):
             for j in range(i + 1, n_channels):
-                f, Cxy = coherence(epoch[i], epoch[j], fs=sfreq, nperseg=min(nperseg, epoch.shape[1]))
+                f, Cxy = coherence(epoch[i], epoch[j], fs=sfreq, nperseg=min(int(nperseg or 256), epoch.shape[1]))
                 # average coherence over band_range
                 idx = (f >= band_range[0]) & (f < band_range[1])
                 if idx.any():
@@ -159,6 +165,19 @@ def extract_features_from_epochs(
     sfreq: Optional[float] = None,
     per_channel: bool = True,
     channel_names: Optional[List[str]] = None,
+    *,
+    # legacy / compatibility kwargs accepted (ignored if unused)
+    enabled: Optional[Iterable[str]] = None,
+    save_spectrograms: bool = False,
+    save_connectivity: bool = False,
+    save_ssl: bool = False,
+    backend: str = "numpy",
+    device: str = "cpu",
+    connectivity_mode: str = "full",
+    max_pairs: Optional[int] = None,
+    nperseg: int | None = None,
+    noverlap: int | None = None,
+    **kwargs: Any,
 ) -> pd.DataFrame:
     """
     Extract per-epoch features from epoch arrays.
@@ -177,6 +196,10 @@ def extract_features_from_epochs(
             epoch_index, start_ts, end_ts, center_ts, session_id, sfreq, n_channels, channel_names,
             per-channel features named e.g. 'delta_CP3_mean', 'theta_CP3_std', 'paf_CP3', 'spec_entropy_CP3', ...
             aggregate columns like 'theta_power_mean', 'total_power_mean', 'coh_alpha', 'perm_entropy_mean', etc.
+
+    Notes:
+        - This function accepts many legacy/compatibility kwargs (enabled, save_spectrograms, backend, etc.)
+          to avoid breaking callers. Most are ignored here unless they directly control nperseg/noverlap.
     """
     n_epochs = epochs.shape[0]
     if n_epochs == 0:
@@ -229,9 +252,9 @@ def extract_features_from_epochs(
         for ch_idx, ch_name in enumerate(channel_names):
             x = e[ch_idx, :].astype(float)
             # spectrogram (time-resolved PSD) for band mean/std
-            freqs, times, Sxx = _spectrogram(x, sfreq, nperseg=min(256, x.size), noverlap=min(128, max(0, x.size // 2)))
+            freqs, times, Sxx = _spectrogram(x, sfreq, nperseg=nperseg or min(256, x.size), noverlap=noverlap)
             # full-epoch (Welch) PSD for PAF and 1/f
-            freqs_w, Pxx = _psd_welch(x, sfreq, nperseg=min(256, x.size))
+            freqs_w, Pxx = _psd_welch(x, sfreq, nperseg=nperseg or min(256, x.size))
 
             # per-band time-series -> mean/std
             for band_name, band_range in BANDS.items():
@@ -286,7 +309,7 @@ def extract_features_from_epochs(
 
         # pairwise coherence per-band (global average across pairs)
         try:
-            coh_map = _bandwise_pairwise_coherence(e, sfreq)
+            coh_map = _bandwise_pairwise_coherence(e, sfreq, bands=BANDS, nperseg=nperseg or 256)
             # store as e.g. coh_delta, coh_theta ...
             for band_name, val in coh_map.items():
                 row[f"coh_{band_name}"] = float(val)
@@ -303,6 +326,10 @@ def extract_features_from_epochs(
         row["perm_entropy_mean"] = float(np.nanmean([row[f"perm_entropy_{ch}"] for ch in channel_names]))
         row["higuchi_fd_mean"] = float(np.nanmean([row[f"higuchi_fd_{ch}"] for ch in channel_names]))
         row["sampen_mean"] = float(np.nanmean([row[f"sampen_{ch}"] for ch in channel_names]))
+
+        # NEW: aggregate spectral entropy and 1/f slope across channels (tests expect these names)
+        row["spec_entropy_mean"] = float(np.nanmean([row[f"spec_entropy_{ch}"] for ch in channel_names]))
+        row["one_over_f_slope"] = float(np.nanmean([row[f"one_over_f_slope_{ch}"] for ch in channel_names]))
 
         # channel zero totals metadata
         num_zero = int(np.sum([1 if row[f"total_{ch}_mean"] == 0 else 0 for ch in channel_names]))

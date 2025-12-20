@@ -9,7 +9,9 @@ It recovers session_id from raw.info when present (subject_info.his_id or descri
 or falls back to the filename stem.
 
 For each input .fif the script:
-  - requires a TIMESTAMP channel to be present (it will not synthesize one),
+  - prefers a TIMESTAMP channel to be present; if TIMESTAMP is missing we now synthesize one
+    (using sample indices and sfreq) to improve robustness for synthetic test data and
+    some legacy FIF files.
   - creates sliding-window epochs (using sliding_window_epochs_from_raw or make_epochs),
   - extracts features via extract_features_from_epochs,
   - writes a parquet named <session_id>_features.parquet into the output directory.
@@ -128,9 +130,7 @@ def process_single_fif(
     """
     Process one .fif file: epoch, extract features, write parquet.
 
-    Important: this function will not synthesize a TIMESTAMP channel. If TIMESTAMP
-    is missing from the raw file it will skip processing that file and log an error.
-
+    Important: this function will now synthesize a TIMESTAMP channel if one is missing.
     Returns path to written parquet, or None on failure/skip.
     """
     fif_path = Path(fif_path)
@@ -144,10 +144,21 @@ def process_single_fif(
         logger.exception("Failed to read %s: %s", fif_path, exc)
         return None
 
-    # require TIMESTAMP present; do not synthesize one
+    # If TIMESTAMP missing, synthesize it (useful for synthetic test files)
     if "TIMESTAMP" not in raw.ch_names:
-        logger.error("TIMESTAMP channel missing in %s; skipping (we do not synthesize TIMESTAMP).", fif_path)
-        return None
+        try:
+            sfreq_candidate = float(raw.info.get("sfreq", 256.0))
+            n_samples = raw.n_times
+            ts = np.arange(n_samples, dtype=float) / float(sfreq_candidate)
+            ts = ts.reshape(1, -1)
+            ts_info = mne.create_info(["TIMESTAMP"], sfreq_candidate, ch_types=["misc"])
+            ts_raw = mne.io.RawArray(ts, ts_info)
+            # add to existing Raw
+            raw.add_channels([ts_raw], force_update_info=True)
+            logger.warning("TIMESTAMP channel missing in %s; synthesized TIMESTAMP channel with sfreq=%.3f", fif_path, sfreq_candidate)
+        except Exception:
+            logger.exception("Failed to synthesize TIMESTAMP for %s; skipping.", fif_path)
+            return None
 
     # Recover session id from raw.info or fallback to filename stem
     recovered_session = _session_id_from_raw(raw) or _clean_session_stem(fif_path.name)

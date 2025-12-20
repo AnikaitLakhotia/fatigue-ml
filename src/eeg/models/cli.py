@@ -3,13 +3,14 @@ from __future__ import annotations
 
 """
 CLI to run modeling workflows (session embeddings, unsupervised pipeline, optional AE training).
+
+This module aims to avoid heavy imports at module import time so that `-m src.eeg.models.cli`
+is fast to start; the heavy modeling modules are imported only when the corresponding
+subcommand is actually invoked.
 """
 
 import argparse
 from pathlib import Path
-from src.eeg.models.embeddings import make_session_embeddings
-from src.eeg.models.unsupervised import run_unsupervised_pipeline
-from src.eeg.models.autoencoder import TrainAutoencoderConfig, train_autoencoder
 from src.eeg.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -63,9 +64,15 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.cmd == "embeddings":
+        # import only when embeddings command invoked
+        from src.eeg.models.embeddings import make_session_embeddings  # local import
+
         aggs = [a.strip() for a in args.aggs.split(",") if a.strip()]
         make_session_embeddings(args.input_dir, args.out_path, agg_methods=aggs)
     elif args.cmd == "unsupervised":
+        # import only when unsupervised subcommand invoked
+        from src.eeg.models.unsupervised import run_unsupervised_pipeline  # local import
+
         run_unsupervised_pipeline(
             args.features,
             args.out,
@@ -74,6 +81,9 @@ def main(argv: list[str] | None = None) -> None:
             cluster_method=args.cluster,
         )
     elif args.cmd == "train-ae":
+        # import only when training requested (avoid importing torch at module import time)
+        from src.eeg.models.autoencoder import TrainAutoencoderConfig, train_autoencoder  # local import
+
         cfg = TrainAutoencoderConfig(
             batch_size=args.bs, epochs=args.epochs, lr=args.lr, latent_dim=args.latent
         )

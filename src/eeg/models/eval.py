@@ -14,7 +14,7 @@ Functions:
 from typing import Sequence, Callable, Dict, Any
 import numpy as np
 import pandas as pd
-from sklearn.metrics import silhouette_score
+
 from src.eeg.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,6 +31,13 @@ def cluster_silhouette_score(X: np.ndarray, labels: Sequence[int]) -> float:
     Returns:
         silhouette score (float). Returns -1.0 if not computable.
     """
+    # Lazy import due to sklearn import cost on some platforms.
+    try:
+        from sklearn.metrics import silhouette_score  # type: ignore
+    except Exception:
+        logger.warning("sklearn.metrics.silhouette_score not available; returning -1.0")
+        return -1.0
+
     if len(set(labels)) <= 1 or len(X) < 2:
         return -1.0
     # remove noise label -1 (HDBSCAN)
@@ -75,7 +82,7 @@ def cluster_temporal_contiguity(
 
 
 def cluster_stability_bootstrap(
-    df,
+    df: pd.DataFrame,
     pipeline_runner: Callable[[pd.DataFrame], Sequence[int]],
     n_iter: int = 10,
     sample_frac: float = 0.8,
@@ -92,7 +99,7 @@ def cluster_stability_bootstrap(
     Returns:
         dict with 'mean_ari' (mean adjusted rand index) and 'ari_list'
     """
-    from sklearn.metrics import adjusted_rand_score
+    from sklearn.metrics import adjusted_rand_score  # lazy import
 
     labels_ref = pipeline_runner(df)
     ari_list = []
@@ -123,7 +130,8 @@ def correlate_with_proxy(df: pd.DataFrame, proxy_name: str) -> Dict[str, float]:
         logger.warning("Missing label or proxy column")
         return {"pearson_r": float("nan"), "spearman_r": float("nan")}
     try:
-        from scipy.stats import pearsonr, spearmanr
+        # lazy import scipy.stats to avoid import-time costs
+        from scipy.stats import pearsonr, spearmanr  # type: ignore
 
         # cluster-wise mean proxy values
         mask = df["label"] != -1

@@ -32,16 +32,6 @@ from src.eeg.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-try:
-    import umap  # type: ignore
-except Exception:
-    umap = None
-
-try:
-    import hdbscan  # type: ignore
-except Exception:
-    hdbscan = None
-
 
 def _numeric_df(df: pd.DataFrame) -> pd.DataFrame:
     """Return numeric-only dataframe (drop non-numeric metadata)."""
@@ -64,7 +54,9 @@ def _fit_cluster_algo(X: np.ndarray, method: str = "hdbscan", **kwargs) -> Tuple
         return np.zeros(X.shape[0], dtype=int), None
 
     if method == "hdbscan":
-        if hdbscan is None:
+        try:
+            import hdbscan  # type: ignore
+        except Exception:
             raise RuntimeError("hdbscan not installed; please `pip install hdbscan`")
         model = hdbscan.HDBSCAN(**kwargs)
         labels = model.fit_predict(X)
@@ -161,19 +153,24 @@ def run_unsupervised_pipeline(
     pipeline = Pipeline(steps) if steps else None
     X_trans = pipeline.fit_transform(X) if pipeline else X
 
-    # UMAP embedding
+    # UMAP embedding (lazy import)
     umap_emb = None
     if umap_components and umap_components > 0:
-        if umap is None:
+        try:
+            import umap as _umap  # type: ignore
+        except Exception:
             logger.warning("UMAP not available; skipping.")
+            _umap = None
+        if _umap is None:
+            umap_emb = None
         elif n_samples <= 2:
             logger.warning("Too few samples (%d) for UMAP; skipping.", n_samples)
         else:
-            reducer = umap.UMAP(n_components=int(umap_components), random_state=42)
+            reducer = _umap.UMAP(n_components=int(umap_components), random_state=42)
             umap_emb = reducer.fit_transform(X_trans)
             logger.info("UMAP reduced to %d dims.", umap_components)
 
-    # Clustering
+    # Clustering (will import hdbscan lazily in helper)
     labels, model = _fit_cluster_algo(X_trans, method=cluster_method, **cluster_kwargs)
 
     # Embeddings DataFrame
