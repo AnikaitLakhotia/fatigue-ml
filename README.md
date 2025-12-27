@@ -1,202 +1,209 @@
-# Fatigue-ML - README
+# Fatigue-ML
 
 EEG fatigue analysis pipeline for reproducible research and deployment.
 
-This is a system for EEG preprocessing, per-session feature extraction, SSL
-embedding generation, and unsupervised modeling.
+This repository provides a full pipeline: CSV → per-session `.fif` → per-epoch features → session embeddings → unsupervised modeling and optional SSL training. It includes tools for preprocessing, feature extraction, modeling, serving, and observability.
 
 ---
 
 ## TL;DR
 
-- A focused pipeline that converts a combined CSV into per-session `.fif`
-  files, extracts per-epoch features (band powers, spectrograms, connectivity),
-  and creates session-level embeddings for downstream modeling.
-- Built for scalability: batched FFTs, optional GPU (PyTorch), file-level
-  parallelism, dtype/resampling optimizations, and clear CLI entrypoints.
-- Key entrypoints:
-  - `python -m src.eeg.scripts.process_sessions` - CSV → per-session `.fif`
-  - `python -m src.eeg.scripts.extract_features` - `.fif` → features parquet
-  - `python -m src.eeg.models.cli embeddings` - features → session embeddings
+- Convert combined CSV into per-session `.fif` files (with `TIMESTAMP` channel).
+- Extract per-epoch features (PSD, spectrogram, connectivity, nonlinear metrics).
+- Create session-level embeddings and run unsupervised modeling (PCA/UMAP/clustering).
+- Optional: SSL training, model export, FastAPI serving, MLflow tracking, Prometheus metrics.
+- Tooling: Poetry, Docker images (cpu/gpu/serving), pre-commit hooks (ruff/black/mypy), CI workflows.
+
+Key entrypoints:
+- `python -m src.eeg.scripts.process_sessions` — CSV → per-session `.fif`
+- `python -m src.eeg.scripts.extract_features` — `.fif` → features parquet
+- `python -m src.eeg.models.cli embeddings` — features → session embeddings
+- `python -m src.eeg.scripts.train_ssl_tf` — SSL training (PyTorch / Lightning)
+- `uvicorn src.eeg.serving.app:app` — model serving (FastAPI)
 
 ---
 
-## Key Capabilities
+## Quick start
 
-- **Robust preprocessing:** bandpass + notch filtering, re-referencing, ICA artifact removal.
-- **Session-level reproducibility:** `.fif` intermediate files saved per session.
-- **Feature extraction:**
-  - PSD (Welch), absolute & relative band powers (δ/θ/α/β/γ)
-  - Peak Alpha Frequency (PAF)
-  - Spectral entropy
-  - 1/f slope
-  - Nonlinear metrics: permutation entropy, Higuchi FD, sample entropy
-  - Pairwise coherence (per canonical band)
-  - Per-epoch **timestamps** (start, end, center)
-  - **Per-channel features** for all 8 canonical locations: `['CP3', 'C3', 'F5', 'PO3', 'PO4', 'F6', 'C4', 'CP4']`
-- **Optional sidecars:** per-epoch spectrograms, sliding-window connectivity
-- **SSL embeddings:** `.npz` files saved in `data/ssl/`
-- **QC logic:** flat/broken channel detection, PSD floor, NaN/Inf sanitization
-
----
-
-## Directory Layout
-
-```
-fatigue-ml/
-├── data/
-│   ├── raw/              # combined EEG CSV
-│   ├── interim/          # per-session preprocessed .fif files
-│   ├── features/         # per-session feature parquet files
-│   ├── ssl/              # per-session .npz embeddings (SSL stage)
-│   └── processed/        # combined embeddings parquet, clustering outputs
-├── src/
-│   └── eeg/
-│       ├── data/         # dataset helpers, I/O
-│       ├── preprocessing/# filters, epoching, normalization
-│       ├── features/     # PSD, entropy, connectivity, patch extraction
-│       ├── models/       # unsupervised.py, autoencoder.py, embeddings.py, eval.py
-│       ├── scripts/      # CLI drivers (process_sessions, extract_features)
-│       └── utils/        # logger, config, montage helpers
-├── tests/                # unit & integration tests
-├── Makefile
-├── pyproject.toml
-└── README.md
-```
-
----
-
-## Install
-
-Use Poetry to manage dependencies. If you require GPU acceleration, install
-PyTorch with the appropriate CUDA support for your environment.
+### 1. Local dev setup
+Recommended: use Python 3.11 and Poetry.
 
 ```bash
+# install dependencies
 poetry install
-```
 
-In CI, prefer a CPU-only matrix by default; add a separate GPU workflow if you
-have GPU runners available.
-
----
-
-## Usage
-
-### 1) Preprocess CSV → session FIF
-
-```bash
-python3 -m src.eeg.scripts.process_sessions   --input data/raw/combined_dataset.csv   --out data/interim
-```
-
-This produces files like `data/interim/{session_id}_preprocessed_raw.fif` and
-ensures a `TIMESTAMP` channel is present.
-
-**Options:** `--no-resample`, `--resample-sfreq`, `--dtype float32|float64`, `--channels`.
-
-### 2) Feature Extraction (parallel)
-
-CPU (NumPy) path:
-
-```bash
-python3 -m src.eeg.scripts.extract_features   many   --input data/interim   --out data/features   --backend numpy   --n-jobs 8   --connectivity-mode minimal
-```
-
-GPU (Torch) path - ensure proper GPU assignment per worker:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python -m src.eeg.scripts.extract_features   many   --input data/interim   --out data/features   --backend torch   --device cuda   --n-jobs 1   --connectivity-mode minimal
-```
-
-**Options:** `--window`, `--overlap`, `--nperseg`, `--noverlap`, `--dtype`, `--save-spectrograms`, `--save-connectivity`, `--save-ssl`.
-
-### 3) Create session embeddings
-
-```bash
-python -m src.eeg.models.cli embeddings   --in data/features   --out data/processed/session_embeddings.parquet
-```
-
----
-
-## File formats & outputs
-
-- **`.fif`** - per-session preprocessed raw (MNE Raw) including `TIMESTAMP`.
-- **Parquet** - per-session per-epoch feature tables (one parquet file per
-  session by default) containing scalar features and optional spectrogram/
-  connectivity sidecars (arrays may be stored or referenced).
-- **`.npz`** - optional per-session SSL outputs (vectors or codebook tokens).
-
-Each epoch row includes (examples):
-- `timestamp_start`, `timestamp_end`, `timestamp_center`
-- `delta_power_mean`, `theta_power_mean`, `alpha_power_mean`, ...
-- `theta_alpha_ratio`, `one_over_f_slope`, `spec_entropy_mean`, ...
-- Optionally per-channel `alpha_ch0`, `alpha_ch1`, ...
-
----
-
-## Internals
-
-- Batched Welch PSD and spectrogram computation (`src.eeg.features._fast_spectral`).
-- Two backends: `numpy` (vectorized FFTs) and `torch` (stft on CPU/GPU).
-- Connectivity computed via averaged STFT cross-spectra; `connectivity_mode`
-  controls computation budget.
-- Early dtype casting to `float32` by default to reduce memory and speed up
-  FFTs; `float64` available if exact numerical parity is required.
-
----
-
-## Performance tuning & best practices
-
-1. Tune `--nperseg` / `--noverlap` to balance time-frequency resolution vs compute.
-2. Resample early to lower the sample rate and reduce FFT cost.
-3. Use `--connectivity-mode minimal` or `none` to avoid expensive all-pairs coherence.
-4. For GPU: prefer one process per GPU or explicit GPU assignment per worker.
-5. Use `pyarrow` parquet engine for fast IO.
-
----
-
-## Testing & CI
-
-- Add parity tests between `numpy` and `torch` backends on small synthetic inputs.
-- Keep CI CPU-only by default; add optional GPU workflow for smoke tests.
-- Use `ruff`, `black`, and `mypy` in pre-commit hooks and CI pipelines.
-
----
-
-## Reproducibility & observability
-
-- Pin dependency ranges and use lockfiles for CI.
-- Log versions, git SHA, and environment (python, torch, cuda) per run.
-- Emit per-file processing durations and counts to a metrics backend.
-
----
-
-## Security & Privacy
-
-- Do not commit data. `.gitignore` excludes `data/`, `.fif`, `.parquet`, and artifacts.
-- Use encrypted object storage for raw EEG and lock down access via IAM.
-
----
-
-## Contributing
-
-Run linters & tests locally:
-
-```bash
+# validate formatting and types locally (pre-commit / CI style)
 poetry run ruff check src tests
 poetry run black --check .
+poetry run mypy --strict src
+```
+
+### 2. Run preprocess (CSV → .fif)
+
+```bash
+python -m src.eeg.scripts.process_sessions \
+  --input data/raw/combined_dataset.csv \
+  --out data/interim
+```
+
+This produces files like `data/interim/{session_id}_preprocessed_raw.fif` and `{session_id}_preprocessed_meta.json`.
+
+### 3. Extract features (parallel)
+
+```bash
+# CPU path (recommended in CI)
+python -m src.eeg.scripts.extract_features many \
+  --input data/interim \
+  --out data/features \
+  --backend numpy \
+  --n-jobs 8 \
+  --connectivity-mode minimal
+```
+
+GPU path (single-process per GPU recommended):
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m src.eeg.scripts.extract_features many \
+  --input data/interim \
+  --out data/features \
+  --backend torch \
+  --device cuda \
+  --n-jobs 1
+```
+
+### 4. Create session embeddings
+
+```bash
+python -m src.eeg.models.cli embeddings \
+  --in data/features \
+  --out data/processed/session_embeddings.parquet
+```
+
+### 5. Unsupervised pipeline / clustering
+
+```bash
+python -m src.eeg.models.cli unsupervised \
+  --features data/processed/session_embeddings.parquet \
+  --out data/processed/models \
+  --pca 10 --umap 2 --cluster kmeans
+```
+
+### 6. Train SSL model (optional; PyTorch required)
+
+```bash
+python -m src.eeg.scripts.train_ssl_tf \
+  --data "data/ssl/*.npz" \
+  --out_dir runs/ssl_run \
+  --batch_size 8 \
+  --epochs 10
+```
+
+---
+
+## Docker
+
+We provide Dockerfiles for reproducible builds. Example (CPU):
+
+```bash
+# build
+make docker-build-cpu DOCKER_IMAGE=fatigue-ml DOCKER_TAG=local
+
+# run quick sanity check
+docker run --rm fatigue-ml:local
+```
+
+For serving:
+
+```bash
+# build serving image (Dockerfile.serving)
+make docker-build-serving
+docker run --rm -p 8080:8080 fatigue-ml-serving:local
+```
+
+---
+
+## CI / Tests
+
+CI runs:
+- ruff (lint), black (format), mypy (type-check)
+- pytest unit and integration tests
+- Docker image build (cpu) artifact
+- Optional GPU smoke tests on gated runners
+
+Run tests locally:
+
+```bash
 poetry run pytest -q
 ```
 
-Add tests for new helpers and ensure backend parity where applicable.
+Run a focused test:
+
+```bash
+poetry run pytest tests/test_ssl_training.py -q
+```
 
 ---
 
-## Contact
+## Modeling & Exports
 
-Maintainer: Anikait Lakhotia <alokhoti@uwaterloo.ca>
+- Session embeddings are created from per-epoch features (`src/eeg/models/embeddings.py`).
+- Unsupervised pipeline supports PCA, UMAP and clustering (HDBSCAN/GMM/KMeans).
+- A simple Autoencoder baseline is provided in `src/eeg/models/autoencoder.py`.
+- Export helpers (TorchScript/ONNX) are in `src/eeg/models/export.py` (when present).
+
+Model registry & tracking:
+- MLflow integration helper available: `src/eeg/utils/experiment.py`.
+- The training scripts optionally log metrics / artifacts to MLflow (local filesystem by default).
 
 ---
 
-## License
+## Serving & Observability
 
-MIT
+- FastAPI app at `src/eeg/serving/app.py` (endpoints: `/health`, `/predict`).
+
+- Prometheus metrics middleware and JSON-structured logs available; enable via env vars.
+- OpenTelemetry stubs included for optional tracing.
+
+---
+
+## Project layout
+
+```
+src/eeg/
+  features/        # PSD, spectrograms, connectivity, TF patches
+  preprocessing/   # filters, epoching, normalization, artifact removal
+  models/          # autoencoder, embeddings, unsupervised pipeline, export
+  scripts/         # CLI: process_sessions, extract_features, train_ssl_tf
+  serving/         # FastAPI + metrics + exporters
+  utils/           # logger, config loader, experiment helpers
+tests/             # unit & integration tests
+Dockerfile.cpu
+Dockerfile.gpu
+Dockerfile.serving
+Makefile
+pyproject.toml
+poetry.lock
+```
+
+---
+
+## Contributing & governance
+
+- Follow `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`.
+- Branch strategy: small feature branches per commit/PR; run pre-commit hooks and all tests before opening PR.
+- Protect `main` branch with required checks: `ruff`, `mypy`, `pytest`.
+
+---
+
+## Troubleshooting & runbook highlights
+
+- If `poetry install` fails in Docker: ensure Poetry version pinned and `PATH` contains `/root/.local/bin`.
+- If `mne` I/O fails reading `.fif`, verify MNE version compatibility.
+- If GPU training crashes: set `CUDA_VISIBLE_DEVICES` and verify PyTorch + CUDA versions match installed drivers.
+
+---
+
+## License & Contact
+
+Maintainer: Anikait Lakhotia <alokhoti@uwaterloo.ca>  
+License: MIT
