@@ -1,0 +1,61 @@
+# Dockerfile.gpu
+# GPU-enabled image. Base is NVIDIA CUDA runtime image. This file is deliberately pragmatic:
+# - Installs python/pip/poetry and uses poetry to install project packages.
+# - Optionally accepts a PYTORCH_CUDA_INDEX build-arg to configure a PyTorch CUDA wheel index.
+#
+# Note: Installing GPU-enabled PyTorch wheels may require selecting the correct wheel index.
+# In CI, set PYTORCH_CUDA_INDEX to e.g. https://download.pytorch.org/whl/cu121 if you want CUDA builds.
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    POETRY_HOME=/opt/poetry \
+    POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_CREATE=false
+
+# System deps: python build tools + essentials
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-dev \
+        python3-pip \
+        build-essential \
+        curl \
+        ca-certificates \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ensure 'python' points to python3
+RUN ln -s /usr/bin/python3 /usr/bin/python \
+    && python -m pip install --upgrade pip
+
+# Install Poetry (pinned)
+RUN curl -sSL https://install.python-poetry.org | python3 - --version 1.8.1 \
+    && ln -s /root/.local/bin/poetry /usr/local/bin/poetry
+
+WORKDIR /app
+
+# copy pyproject + optional lockfile
+COPY pyproject.toml poetry.lock* /app/
+
+# Optionally let build user supply PYTORCH_CUDA_INDEX (used as PIP_EXTRA_INDEX_URL) to get CUDA-wheels
+ARG PYTORCH_CUDA_INDEX=""
+# Use poetry but allow the builder to request a CUDA-aware torch wheel by setting PYTORCH_CUDA_INDEX
+RUN poetry config virtualenvs.create false \
+    && if [ -n "$PYTORCH_CUDA_INDEX" ]; then \
+         echo "Using custom PyTorch index: $PYTORCH_CUDA_INDEX" && \
+         PIP_EXTRA_INDEX_URL=$PYTORCH_CUDA_INDEX poetry install --no-interaction --no-ansi --no-root; \
+       else \
+         poetry install --no-interaction --no-ansi --no-root; \
+       fi
+
+# Copy source
+COPY . /app
+
+# Create runtime user
+RUN adduser --disabled-password --gecos "" appuser && chown -R appuser:appuser /app
+USER appuser
+ENV PATH="/home/appuser/.local/bin:${PATH}"
+
+# Default is to print torch version (useful to verify CUDA-enabled build)
+CMD ["python", "-c", "import torch, sys; print('torch', getattr(torch, '__version__', 'not-installed'))"]

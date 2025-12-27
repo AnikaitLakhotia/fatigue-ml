@@ -1,0 +1,21 @@
+# dockerignore - keeps images small
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.envrc
+.venv
+venv/
+build/
+dist/
+*.egg-info
+.git
+.gitignore
+tests/
+data/
+.notebooks/
+.vscode/
+.idea/
+.DS_Store

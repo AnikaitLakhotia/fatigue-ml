@@ -1,0 +1,50 @@
+# Dockerfile.cpu — reproducible, minimal CPU image for the fatigue-ml project
+# - Uses python:3.11-slim-bullseye
+# - Installs minimal build dependencies required by common ML packages (numpy/scipy)
+# - Installs Poetry and uses it to install project dependencies system-wide (virtualenvs.create=false)
+# - Copies project source and sets a simple CMD for quick sanity checks
+
+FROM python:3.11-slim-bullseye
+
+# Noninteractive apt
+ENV DEBIAN_FRONTEND=noninteractive
+# Ensure Poetry (installed to /root/.local/bin) is available in subsequent steps
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Install minimal system deps for building scientific Python packages and runtime utils
+# Keep list minimal to reduce image size; add more if your deps require them (e.g., libsndfile1)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        git \
+        ca-certificates \
+        gfortran \
+        libatlas-base-dev \
+        libblas-dev \
+        liblapack-dev \
+        pkg-config \
+        libsndfile1 \
+        libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install a pinned Poetry release (installer will place binary into /root/.local/bin)
+# Poetry version pinned for reproducibility; change if you have a different policy.
+RUN curl -sSL https://install.python-poetry.org | python3 - --version 1.8.1
+
+WORKDIR /app
+
+# Copy only lock/project files first to leverage Docker layer caching for deps
+COPY pyproject.toml poetry.lock* /app/
+
+# Configure Poetry to not create virtualenvs and install dependencies system-wide
+# --no-root avoids installing the package itself into the environment (if you prefer the package installed, remove --no-root)
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-interaction --no-ansi --no-root
+
+# Copy project source
+COPY . /app
+
+# Optional: expose a small health-check command (keeps container runnable)
+# Default entry — quick sanity import
+CMD ["python", "-c", "import src.eeg; print('fatigue-ml: OK')"]
