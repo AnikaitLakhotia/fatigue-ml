@@ -20,7 +20,7 @@ build/
 .ipynb_checkpoints
 
 # Data and artifacts (do NOT commit raw/derived data)
-data/
+/data/
 *.csv
 *.fif
 *.parquet

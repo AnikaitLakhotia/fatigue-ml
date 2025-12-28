@@ -45,6 +45,12 @@ except Exception:
 
 from src.eeg.features.extract_features import extract_features_from_epochs  # user-provided extractor
 
+# Optional validation helper (will use GE if available, otherwise pandas fallback)
+try:
+    from src.eeg.data.validation import validate_parquet  # type: ignore
+except Exception:
+    validate_parquet = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,12 +132,16 @@ def process_single_fif(
     noverlap: int = 128,
     parquet_engine: str = "pyarrow",
     overwrite: bool = True,
+    validate: bool = False,
 ) -> Optional[Path]:
     """
     Process one .fif file: epoch, extract features, write parquet.
 
     Important: this function will now synthesize a TIMESTAMP channel if one is missing.
     Returns path to written parquet, or None on failure/skip.
+
+    If `validate=True` and a schema validator is available, run validation on the
+    written parquet and raise RuntimeError (and remove the parquet) on failure.
     """
     fif_path = Path(fif_path)
     out_dir = Path(out_dir)
@@ -155,7 +165,11 @@ def process_single_fif(
             ts_raw = mne.io.RawArray(ts, ts_info)
             # add to existing Raw
             raw.add_channels([ts_raw], force_update_info=True)
-            logger.warning("TIMESTAMP channel missing in %s; synthesized TIMESTAMP channel with sfreq=%.3f", fif_path, sfreq_candidate)
+            logger.warning(
+                "TIMESTAMP channel missing in %s; synthesized TIMESTAMP channel with sfreq=%.3f",
+                fif_path,
+                sfreq_candidate,
+            )
         except Exception:
             logger.exception("Failed to synthesize TIMESTAMP for %s; skipping.", fif_path)
             return None
@@ -172,7 +186,9 @@ def process_single_fif(
         elif _make_epochs is not None:
             res = _make_epochs(raw, window=window, overlap=overlap)
         else:
-            raise RuntimeError("No epoching helper available (sliding_window_epochs_from_raw or make_epochs required)")
+            raise RuntimeError(
+                "No epoching helper available (sliding_window_epochs_from_raw or make_epochs required)"
+            )
         # res may be epochs or (epochs, meta)
         if isinstance(res, tuple) and len(res) >= 1:
             epochs = res[0]
@@ -199,7 +215,9 @@ def process_single_fif(
                     "epoch_index": i,
                     "start_ts": float(i * (epochs.shape[2] / sfreq)),
                     "end_ts": float((i + 1) * (epochs.shape[2] / sfreq)),
-                    "center_ts": float(((i * (epochs.shape[2] / sfreq)) + ((i + 1) * (epochs.shape[2] / sfreq))) / 2.0),
+                    "center_ts": float(
+                        ((i * (epochs.shape[2] / sfreq)) + ((i + 1) * (epochs.shape[2] / sfreq))) / 2.0
+                    ),
                     "session_id": recovered_session,
                     "sfreq": sfreq,
                     "n_channels": epochs.shape[1],
@@ -263,6 +281,32 @@ def process_single_fif(
         logger.exception("Failed writing parquet for %s", fif_path)
         return None
 
+    # optional validation/gating
+    if validate:
+        if validate_parquet is None:
+            logger.warning("Validation requested but validator not available (install great_expectations or ensure src.eeg.data.validation is importable). Skipping validation.")
+        else:
+            # pick epoch schema (repo-relative schemas/epoch_features.schema.json)
+            schema_file = Path(__file__).resolve().parents[2] / "schemas" / "epoch_features.schema.json"
+            schema_path = str(schema_file)
+            try:
+                logger.info("Running schema validation on %s using %s", out_path, schema_path)
+                res = validate_parquet(out_path, schema_path=schema_path, use_great_expectations=True)
+                logger.info("Validation result for %s: success=%s engine=%s", out_path, res.get("success", False), res.get("engine"))
+            except Exception:
+                # On validation failure: remove invalid artifact (best-effort) and raise to gate pipeline
+                logger.exception("Validation failed for %s; removing output parquet and raising", out_path)
+                try:
+                    # Python 3.8+ supports missing_ok, but use safe fallback for older versions
+                    out_path.unlink(missing_ok=True)  # type: ignore
+                except TypeError:
+                    try:
+                        if out_path.exists():
+                            out_path.unlink()
+                    except Exception:
+                        logger.exception("Failed to remove invalid output %s", out_path)
+                raise
+
     return out_path
 
 
@@ -282,7 +326,9 @@ def _process_many(
 
     n_jobs = n_jobs or (os.cpu_count() or 1)
     n_jobs = max(1, int(n_jobs))
-    logger.info("Processing %d files with %d workers (backend=%s device=%s)", len(files), n_jobs, backend, device)
+    logger.info(
+        "Processing %d files with %d workers (backend=%s device=%s)", len(files), n_jobs, backend, device
+    )
 
     worker = partial(process_single_fif, out_dir=out_dir, backend=backend, device=device, **kwargs)
 
@@ -331,6 +377,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--nperseg", type=int, default=256)
     p.add_argument("--noverlap", type=int, default=128)
     p.add_argument("--verbose", "-v", action="store_true")
+    p.add_argument(
+        "--validate",
+        action="store_true",
+        help="Run schema validation (using schemas/epoch_features.schema.json) on each written parquet and fail if invalid",
+    )
     return p
 
 
@@ -360,6 +411,7 @@ def main():
         max_pairs=args.max_pairs,
         parquet_engine=args.parquet_engine,
         overwrite=not args.no_overwrite,
+        validate=args.validate,
     )
 
     if args.mode == "single":

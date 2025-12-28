@@ -1,0 +1,24 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Epoch features schema (lightweight)",
+    "type": "object",
+    "description": "A permissive schema for per-epoch feature parquet files. Additional columns allowed.",
+    "properties": {
+      "epoch_index": { "type": "integer" },
+      "session_id": { "type": "string" },
+      "sfreq": { "type": "number" },
+      "n_channels": { "type": "integer" },
+      "channel_names": { "type": "array" },
+      "start_ts": { "type": "number" },
+      "end_ts": { "type": "number" },
+      "center_ts": { "type": "number" },
+      "theta_power_mean": { "type": "number", "minimum": 0 },
+      "alpha_power_mean": { "type": "number", "minimum": 0 },
+      "theta_alpha_ratio": { "type": "number" },
+      "spec_entropy_mean": { "type": "number" },
+      "one_over_f_slope": { "type": "number" }
+    },
+    "required": ["epoch_index", "session_id", "sfreq"],
+    "additionalProperties": true
+  }
+  

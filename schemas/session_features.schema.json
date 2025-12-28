@@ -1,0 +1,15 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Session embedding schema (lightweight)",
+    "type": "object",
+    "description": "Schema for session-level embeddings parquet (one row per session). Additional columns allowed.",
+    "properties": {
+      "session_id": { "type": "string" },
+      "sfreq": { "type": "number" },
+      "n_channels": { "type": "integer" },
+      "source_file": { "type": "string" }
+    },
+    "required": ["session_id"],
+    "additionalProperties": true
+  }
+  
