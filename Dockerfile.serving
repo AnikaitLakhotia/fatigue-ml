@@ -1,0 +1,31 @@
+# Dockerfile.serving
+FROM python:3.11-slim-bullseye as base
+
+# Minimal build-time deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install poetry or use pip - here we prefer pip for serving minimal image
+COPY pyproject.toml poetry.lock* /app/
+# If you use poetry, replace with proper poetry install (not required for simple serving)
+# Use pip to install runtime deps
+RUN python -m pip install --upgrade pip
+RUN pip install fastapi uvicorn[standard] numpy
+
+# Optional: install torch CPU wheel if desired; comment out if you plan to mount GPU image
+# RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Copy package
+COPY src /app/src
+WORKDIR /app
+
+EXPOSE 8080
+
+# default environment variables
+ENV PYTHONUNBUFFERED=1
+
+CMD ["uvicorn", "src.eeg.serving.app:app", "--host", "0.0.0.0", "--port", "8080"]
