@@ -1,9 +1,14 @@
 # src/eeg/scripts/train_ssl_tf.py
-"""Training entrypoint for SSL model.
+"""Training entrypoint for SSL model with optional MLflow tracking.
 
 This script builds dataloaders with pinned memory and persistent workers,
 handles variable-length EEG sequences via padded collate, configures a
 PyTorch Lightning Trainer for mixed-precision and checkpointing, and runs training.
+
+MLflow integration:
+  --mlflow : enable MLflow tracking (local filesystem by default)
+  --mlflow_experiment : experiment name to use
+  --mlflow_tracking_uri : optional tracking URI (e.g. file:///tmp/mlruns)
 
 A small "fast" mode (CLI flag --fast or env PYTEST_FAST=1) configures the Trainer
 to run a very small quick dev run suitable for CI/tests.
@@ -14,7 +19,7 @@ import argparse
 import glob
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import torch
 from torch.utils.data import DataLoader
@@ -23,6 +28,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from src.eeg.utils.logger import get_logger
+from src.eeg.utils.experiment import start_run, safe_log_artifacts, mlflow_available
 from src.eeg.models.ssl_dataset import SSLDataset, SSLAugmentations, pad_collate_fn, _load_array_lazy
 from src.eeg.models.ssl_tf import SSLModelPL
 
@@ -77,6 +83,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Enable fast-mode for quick CI/test runs (equivalent to PYTEST_FAST=1).",
     )
+
+    # MLflow options
+    p.add_argument(
+        "--mlflow",
+        action="store_true",
+        help="Enable MLflow tracking for this run (local file backend by default).",
+    )
+    p.add_argument("--mlflow_experiment", type=str, default="fatigue-ml", help="MLflow experiment name")
+    p.add_argument("--mlflow_tracking_uri", type=str, default=None, help="MLflow tracking URI (e.g. file:///tmp/mlruns)")
+
     return p.parse_args(argv)
 
 
@@ -89,6 +105,21 @@ def expand_sources(inputs: List[str]) -> List[str]:
         else:
             out.append(item)
     return out
+
+
+def _collect_run_params(args: argparse.Namespace) -> Dict[str, Any]:
+    """Build simple dict of params to record in MLflow."""
+    return {
+        "batch_size": args.batch_size,
+        "epochs": args.epochs,
+        "num_workers": args.num_workers,
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "proj_dim": args.proj_dim,
+        "encoder_hidden": args.encoder_hidden,
+        "precision": args.precision,
+        "seed": args.seed,
+    }
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -188,16 +219,42 @@ def main(argv: Optional[List[str]] = None) -> None:
     trainer = pl.Trainer(**trainer_kwargs)
 
     logger.info("Starting training (samples=%d, batch_size=%d)", len(sources), args.batch_size)
-    # pass resume checkpoint via ckpt_path to fit
-    trainer.fit(model, train_loader, val_loader, ckpt_path=args.resume_from)
-    logger.info("Training complete. Best checkpoints in %s", str(out_dir / "checkpoints"))
 
-    # In fast/CI mode, Lightning suppresses all logging and checkpoints.
-    # Create a tiny sentinel artifact so integration tests can assert output existence.
+    # Optionally wrap training in MLflow run
+    mlflow_run_name = f"ssl-{Path(args.out_dir).name}"
+    if args.mlflow:
+        if not mlflow_available:
+            logger.warning("MLflow requested but mlflow package not available; continuing without MLflow.")
+        with start_run(experiment_name=args.mlflow_experiment, tracking_uri=args.mlflow_tracking_uri, run_name=mlflow_run_name, params=_collect_run_params(args)) as mlflow:
+            # run training
+            trainer.fit(model, train_loader, val_loader, ckpt_path=args.resume_from)
+            logger.info("Training complete. Best checkpoints in %s", str(out_dir / "checkpoints"))
+
+            # Log artifacts (TensorBoard logs, checkpoints) if mlflow available
+            if mlflow is not None:
+                try:
+                    safe_log_artifacts(mlflow, out_dir)
+                    # log best checkpoint if exists
+                    best_ckpt = getattr(ckpt_cb, "best_model_path", "")
+                    if best_ckpt:
+                        try:
+                            mlflow.log_artifact(str(best_ckpt), artifact_path="checkpoints")
+                        except Exception:
+                            # fallback: use safe_log_artifacts on parent dir
+                            pass
+                except Exception:
+                    logger.exception("Failed to log artifacts to MLflow.")
+    else:
+        # no mlflow
+        trainer.fit(model, train_loader, val_loader, ckpt_path=args.resume_from)
+        logger.info("Training complete. Best checkpoints in %s", str(out_dir / "checkpoints"))
+
+    # In fast/CI mode, Lightning may suppress some outputs. Create sentinel so tests can detect run completion.
     if fast_mode:
         sentinel = out_dir / ".fast_run_complete"
         sentinel.write_text("ok\n")
         logger.info("Fast mode: wrote sentinel artifact %s", sentinel)
+
 
 if __name__ == "__main__":
     main()
